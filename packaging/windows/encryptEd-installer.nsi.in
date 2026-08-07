@@ -1,0 +1,168 @@
+Unicode True
+
+!define PRODUCT_NAME "@ENCRYPTED_WINDOWS_DISPLAY_NAME@"
+!define PRODUCT_VERSION "@ENCRYPTED_APP_VERSION@"
+!define PRODUCT_PUBLISHER "@ENCRYPTED_APP_AUTHOR@"
+!define PRODUCT_EXE "encryptEd.exe"
+!define PRODUCT_EXE_PATH "bin\encryptEd.exe"
+!define PRODUCT_STAGE_GLOB "@ENCRYPTED_NSIS_STAGE_GLOB_NATIVE@"
+!define PRODUCT_INSTALL_KEY "@ENCRYPTED_WINDOWS_INSTALL_REGISTRY_KEY@"
+!define PRODUCT_UNINSTALL_KEY "@ENCRYPTED_WINDOWS_UNINSTALL_REGISTRY_KEY@"
+!define PRODUCT_STARTMENU_DIR "@ENCRYPTED_WINDOWS_DISPLAY_NAME@"
+!define PRODUCT_ASSOC_EXT ".txx"
+!define PRODUCT_ASSOC_PROGID "encryptEd.txxfile"
+
+Name "${PRODUCT_NAME}"
+OutFile "@ENCRYPTED_NSIS_OUTPUT_NATIVE@"
+InstallDir ""
+ShowInstDetails show
+ShowUninstDetails show
+
+!define MULTIUSER_EXECUTIONLEVEL Highest
+!define MULTIUSER_MUI
+!define MULTIUSER_INSTALLMODE_COMMANDLINE
+!define MULTIUSER_INSTALLMODE_DEFAULT_CURRENTUSER
+!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_KEY "${PRODUCT_INSTALL_KEY}"
+!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_VALUENAME "AllUsers"
+!define MULTIUSER_INSTALLMODE_INSTDIR "@ENCRYPTED_WINDOWS_INSTALL_SUBDIR@"
+!define MULTIUSER_INSTALLMODE_INSTDIR_REGISTRY_KEY "${PRODUCT_INSTALL_KEY}"
+!define MULTIUSER_INSTALLMODE_INSTDIR_REGISTRY_VALUENAME "InstallLocation"
+@ENCRYPTED_NSIS_PROGRAMFILES_DIRECTIVE@
+
+!include "LogicLib.nsh"
+!include "Integration.nsh"
+!include "MultiUser.nsh"
+!include "MUI2.nsh"
+
+!define MUI_ICON "@ENCRYPTED_ICON_ICO_NATIVE@"
+!define MUI_UNICON "@ENCRYPTED_ICON_ICO_NATIVE@"
+!define MUI_ABORTWARNING
+!define MUI_WELCOMEPAGE_TITLE "Install ${PRODUCT_NAME}"
+!define MUI_WELCOMEPAGE_TEXT "Install ${PRODUCT_NAME} ${PRODUCT_VERSION}. The default is a per-user install under your local Programs folder. You can switch to an all-users install on the next page."
+!define MUI_FINISHPAGE_RUN "$INSTDIR\${PRODUCT_EXE_PATH}"
+!define MUI_FINISHPAGE_RUN_TEXT "Launch ${PRODUCT_NAME}"
+
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MULTIUSER_PAGE_INSTALLMODE
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "English"
+
+Function .onInit
+@ENCRYPTED_NSIS_SET_REG_VIEW@
+  !insertmacro MULTIUSER_INIT
+FunctionEnd
+
+Function un.onInit
+@ENCRYPTED_NSIS_SET_REG_VIEW@
+  !insertmacro MULTIUSER_UNINIT
+FunctionEnd
+
+Function RemoveInstalledCopy
+  Exch $0
+
+  IfFileExists "$0\Uninstall.exe" 0 done
+  ExecWait '"$0\Uninstall.exe" /S _?=$0' $1
+  ${If} $1 != 0
+    Abort "Failed to remove the existing installation."
+  ${EndIf}
+
+done:
+  Pop $0
+FunctionEnd
+
+Function RemoveExistingInstallations
+  ReadRegStr $0 HKCU "${PRODUCT_INSTALL_KEY}" "InstallLocation"
+  ReadRegStr $1 HKLM "${PRODUCT_INSTALL_KEY}" "InstallLocation"
+
+  ${If} $0 == ""
+  ${AndIf} $1 == ""
+    Return
+  ${EndIf}
+
+  MessageBox MB_YESNO|MB_ICONQUESTION \
+    "${PRODUCT_NAME} is already installed on this computer. Setup needs to remove the existing installation before continuing." \
+    IDYES remove_existing
+  Abort "Installation cancelled."
+
+remove_existing:
+  ${If} $0 != ""
+    Push $0
+    Call RemoveInstalledCopy
+  ${EndIf}
+  ${If} $1 != ""
+  ${AndIf} $1 != $0
+    Push $1
+    Call RemoveInstalledCopy
+  ${EndIf}
+FunctionEnd
+
+Section "${PRODUCT_NAME}"
+  SectionIn RO
+
+  Call RemoveExistingInstallations
+
+  SetOutPath "$InstDir"
+  File /r "${PRODUCT_STAGE_GLOB}"
+  WriteUninstaller "$InstDir\Uninstall.exe"
+
+  WriteRegStr ShCtx "${PRODUCT_INSTALL_KEY}" "InstallLocation" "$InstDir"
+  WriteRegStr ShCtx "${PRODUCT_INSTALL_KEY}" $MultiUser.InstallMode 1
+
+  WriteRegStr ShCtx "${PRODUCT_UNINSTALL_KEY}" "DisplayName" "${PRODUCT_NAME}"
+  WriteRegStr ShCtx "${PRODUCT_UNINSTALL_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
+  WriteRegStr ShCtx "${PRODUCT_UNINSTALL_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
+  WriteRegStr ShCtx "${PRODUCT_UNINSTALL_KEY}" "DisplayIcon" "$InstDir\${PRODUCT_EXE_PATH},0"
+  WriteRegStr ShCtx "${PRODUCT_UNINSTALL_KEY}" "InstallLocation" "$InstDir"
+  WriteRegStr ShCtx "${PRODUCT_UNINSTALL_KEY}" "UninstallString" '"$InstDir\Uninstall.exe"'
+  WriteRegStr ShCtx "${PRODUCT_UNINSTALL_KEY}" "QuietUninstallString" '"$InstDir\Uninstall.exe" /S'
+  WriteRegDWORD ShCtx "${PRODUCT_UNINSTALL_KEY}" "NoModify" 1
+  WriteRegDWORD ShCtx "${PRODUCT_UNINSTALL_KEY}" "NoRepair" 1
+
+  CreateDirectory "$SMPROGRAMS\${PRODUCT_STARTMENU_DIR}"
+  CreateShortcut /NoWorkingDir "$SMPROGRAMS\${PRODUCT_STARTMENU_DIR}\${PRODUCT_NAME}.lnk" "$InstDir\${PRODUCT_EXE_PATH}"
+  CreateShortcut /NoWorkingDir "$SMPROGRAMS\${PRODUCT_STARTMENU_DIR}\Uninstall ${PRODUCT_NAME}.lnk" "$InstDir\Uninstall.exe"
+
+  WriteRegStr ShCtx "Software\Classes\${PRODUCT_ASSOC_PROGID}" "" "${PRODUCT_NAME} document"
+  WriteRegStr ShCtx "Software\Classes\${PRODUCT_ASSOC_PROGID}\DefaultIcon" "" "$InstDir\${PRODUCT_EXE_PATH},0"
+  WriteRegStr ShCtx "Software\Classes\${PRODUCT_ASSOC_PROGID}\shell" "" "open"
+  WriteRegStr ShCtx "Software\Classes\${PRODUCT_ASSOC_PROGID}\shell\open\command" "" '"$InstDir\${PRODUCT_EXE_PATH}" "%1"'
+  WriteRegStr ShCtx "Software\Classes\${PRODUCT_ASSOC_EXT}" "" "${PRODUCT_ASSOC_PROGID}"
+  WriteRegNone ShCtx "Software\Classes\${PRODUCT_ASSOC_EXT}\OpenWithList" "${PRODUCT_EXE}"
+  WriteRegStr ShCtx "Software\Classes\Applications\${PRODUCT_EXE}\shell\open\command" "" '"$InstDir\${PRODUCT_EXE_PATH}" "%1"'
+  WriteRegStr ShCtx "Software\Classes\Applications\${PRODUCT_EXE}" "FriendlyAppName" "${PRODUCT_NAME}"
+  WriteRegStr ShCtx "Software\Classes\Applications\${PRODUCT_EXE}" "ApplicationCompany" "${PRODUCT_PUBLISHER}"
+  WriteRegNone ShCtx "Software\Classes\Applications\${PRODUCT_EXE}\SupportedTypes" "${PRODUCT_ASSOC_EXT}"
+  ${NotifyShell_AssocChanged}
+SectionEnd
+
+Section "Uninstall"
+  ${UnpinShortcut} "$SMPROGRAMS\${PRODUCT_STARTMENU_DIR}\${PRODUCT_NAME}.lnk"
+  Delete "$SMPROGRAMS\${PRODUCT_STARTMENU_DIR}\${PRODUCT_NAME}.lnk"
+  Delete "$SMPROGRAMS\${PRODUCT_STARTMENU_DIR}\Uninstall ${PRODUCT_NAME}.lnk"
+  RMDir "$SMPROGRAMS\${PRODUCT_STARTMENU_DIR}"
+
+  ReadRegStr $0 ShCtx "Software\Classes\${PRODUCT_ASSOC_EXT}" ""
+  DeleteRegKey ShCtx "Software\Classes\Applications\${PRODUCT_EXE}"
+  DeleteRegKey ShCtx "Software\Classes\${PRODUCT_ASSOC_PROGID}"
+  DeleteRegValue ShCtx "Software\Classes\${PRODUCT_ASSOC_EXT}\OpenWithList" "${PRODUCT_EXE}"
+  DeleteRegKey /IfEmpty ShCtx "Software\Classes\${PRODUCT_ASSOC_EXT}\OpenWithList"
+  ${If} $0 == "${PRODUCT_ASSOC_PROGID}"
+    DeleteRegValue ShCtx "Software\Classes\${PRODUCT_ASSOC_EXT}" ""
+  ${EndIf}
+  DeleteRegKey /IfEmpty ShCtx "Software\Classes\${PRODUCT_ASSOC_EXT}"
+  ${NotifyShell_AssocChanged}
+
+  DeleteRegKey ShCtx "${PRODUCT_UNINSTALL_KEY}"
+  DeleteRegValue ShCtx "${PRODUCT_INSTALL_KEY}" $MultiUser.InstallMode
+  DeleteRegValue ShCtx "${PRODUCT_INSTALL_KEY}" "InstallLocation"
+  DeleteRegKey /IfEmpty ShCtx "${PRODUCT_INSTALL_KEY}"
+
+  RMDir /r "$InstDir\bin"
+  Delete "$InstDir\Uninstall.exe"
+  RMDir "$InstDir"
+SectionEnd

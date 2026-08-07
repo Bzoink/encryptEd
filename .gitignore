@@ -1,0 +1,37 @@
+build/
+build-tui/
+build-win64/
+build-tui-win64/
+texts/
+
+# Vendored third-party dependencies, obtained separately at build time
+# (unmodified upstream code — not redistributed in this repo).
+# See CLAUDE.md for what CMake expects at each path.
+lib/monocypher/
+lib/fltk/1_4/
+lib/fltk/1_5/
+
+# In-source CMake build artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+Makefile
+build.ninja
+.ninja_deps
+.ninja_log
+rules.ninja
+compile_commands.json
+Testing/
+install_manifest.txt
+CLAUDE.md
+
+# In-source generated binaries and libraries
+encryptEd
+encryptEd.app/
+encrypted_cli
+encrypted_core_tests
+libencrypted_core.a
+libmicroz.a
+libmonocypher.a

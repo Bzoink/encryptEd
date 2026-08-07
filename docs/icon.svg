@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">EncryptEd icon</title>
+  <desc id="desc">A document with a pencil and padlock, representing secure text editing.</desc>
+  <rect x="24" y="24" width="208" height="208" rx="52" fill="#0d1f30"/>
+  <rect x="58" y="40" width="102" height="136" rx="18" fill="#f4f6f8"/>
+  <path d="M126 40h34v34h-34z" fill="#e5ecf2"/>
+  <path d="M126 40l34 34h-34z" fill="#d9e3ec"/>
+  <rect x="76" y="76" width="58" height="10" rx="5" fill="#8fa7b8"/>
+  <rect x="76" y="96" width="42" height="10" rx="5" fill="#8fa7b8"/>
+  <rect x="76" y="116" width="50" height="10" rx="5" fill="#8fa7b8"/>
+  <path d="M68 182l60-60 28 28-60 60-34 8z" fill="#f0a93e"/>
+  <path d="M79 171l60-60 11 11-60 60z" fill="#fad47f" opacity="0.9"/>
+  <path d="M150 100l18 18-12 4-10-10z" fill="#7a5b3f"/>
+  <path d="M156 103l7 7-5 2-4-4z" fill="#1e2227"/>
+  <path d="M176 124c0-16 12-28 28-28s28 12 28 28v12h-12v-12c0-9-7-16-16-16s-16 7-16 16v12h-12z" fill="#d3dee8"/>
+  <rect x="164" y="132" width="72" height="62" rx="16" fill="#24be92"/>
+  <circle cx="200" cy="160" r="10" fill="#0b4839"/>
+  <rect x="195" y="160" width="10" height="20" rx="4" fill="#0b4839"/>
+</svg>

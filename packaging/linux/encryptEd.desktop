@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=EncryptEd
+Comment=Encrypted UTF-8 text editor
+Exec=encryptEd
+Icon=encryptEd
+StartupWMClass=encryptEd
+Terminal=false
+Categories=Utility;TextEditor;
+Keywords=encrypt;editor;text;txx;
+StartupNotify=true
