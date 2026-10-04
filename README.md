@@ -42,8 +42,19 @@ printf '%s\n' "$PASSPHRASE" | build/encrypted_cli pack input.txt output.txx --pa
 
 The CLI exists to exercise the core format alongside the desktop editor. By default it prompts for the passphrase without echoing it; use `--password-stdin` for scripts.
 
+## Text Plugins
+
+The GUI supports restricted Lua plugins for editing the active document and asking
+for input. Put `.lua` scripts in **Plugins → Open Plugins Folder**, then choose
+**Reload Plugins**. Subdirectories become nested menus. Plugins have no file,
+network, or process access, and each successful run is one undoable text change.
+See [the plugin guide](docs/plugins.md) for the API and installation paths, and
+[examples/plugins](examples/plugins) for example commands.
+
 ## Vendored Dependencies
 
+- `lib/lua`: Lua 5.4.9, committed with its MIT license and archive checksum.
+  The plugin runtime statically links selected libraries and exposes a restricted API.
 - `lib/microz`: stripped miniz-derived raw DEFLATE support, kept as the compression layer.
   Committed to this repo — it's a modified derivative (ported to C17, archive APIs
   stripped), not a redistributed vendor copy, released under microz's original MIT

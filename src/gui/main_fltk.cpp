@@ -27,6 +27,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <deque>
+#include <map>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -55,6 +58,8 @@ extern "C" {
 
 #include "gui/text_transform.h"
 #include "gui/md_highlight.h"
+#include "gui/plugin_buffer.h"
+#include "gui/plugin_dialog.h"
 
 #ifndef ENCRYPTED_APP_AUTHOR
 #define ENCRYPTED_APP_AUTHOR "Unknown"
@@ -1081,6 +1086,14 @@ public:
         : Fl_Text_Editor(x, y, w, h), on_drop_(std::move(on_drop))
     {
         tab_nav(0);
+        // Route every default undo shortcut through the transaction boundaries.
+        for (auto *binding = key_bindings; binding; binding = binding->next)
+            if (binding->function == Fl_Text_Editor::kf_undo) binding->function = EditorTextBuffer::undo_key;
+        add_key_binding('z', FL_CTRL | FL_SHIFT, EditorTextBuffer::redo_key);
+        add_key_binding('y', FL_CTRL, EditorTextBuffer::redo_key);
+#ifdef __APPLE__
+        add_key_binding('z', FL_META | FL_SHIFT, EditorTextBuffer::redo_key);
+#endif
     }
 
     void set_indent_behavior(AppSettings::IndentMode indent_mode, int indent_width)
@@ -1373,7 +1386,7 @@ public:
 class EncryptEdWindow : public Fl_Double_Window {
     EditorMenuBar    *menu_;
     DndTextEditor    *editor_;
-    Fl_Text_Buffer   *buf_;
+    EditorTextBuffer *buf_;
     Fl_Box           *status_;
     Fl_Box           *insert_mode_box_;
     Fl_Box           *cursor_pos_;
@@ -1394,6 +1407,154 @@ class EncryptEdWindow : public Fl_Double_Window {
     static constexpr int STAT_H    = 20;
     static constexpr int CURSOR_W  = 160;
     static constexpr int INS_W     = 36;
+
+    bool plugin_running_ = false;
+    plugins::Catalog plugin_catalog_;
+    std::filesystem::path plugin_root_ = plugins::user_directory();
+    struct PluginBinding { EncryptEdWindow *window; std::size_t index; };
+    std::vector<PluginBinding> plugin_bindings_;
+    std::deque<std::string> plugin_labels_;
+    std::vector<Fl_Menu_Item> plugin_menu_;
+
+    void append_plugin_item(const std::string &label, Fl_Callback *callback,
+                            void *data, int flags = 0)
+    {
+        // Build raw menu items to preserve slashes and other menu-path characters.
+        std::string literal;
+        for (char ch : label) { literal += ch; if (ch == '&') literal += '&'; }
+        plugin_labels_.push_back(std::move(literal));
+        Fl_Menu_Item item{};
+        item.text = plugin_labels_.back().c_str();
+        item.callback_ = callback;
+        item.user_data_ = data;
+        item.flags = flags;
+        item.labelsize_ = FL_NORMAL_SIZE;
+        plugin_menu_.push_back(item);
+    }
+
+    void reload_plugins(bool report_errors)
+    {
+        if (plugin_running_) return;
+        menu_->value(-1);
+        plugin_catalog_ = plugins::discover(plugin_root_);
+        plugin_menu_.clear(); plugin_labels_.clear(); plugin_bindings_.clear();
+        plugin_bindings_.reserve(plugin_catalog_.commands.size());
+        append_plugin_item("Reload Plugins", [](Fl_Widget *, void *v) {
+            static_cast<EncryptEdWindow *>(v)->reload_plugins(true);
+        }, this);
+        append_plugin_item("Open Plugins Folder", [](Fl_Widget *, void *v) {
+            static_cast<EncryptEdWindow *>(v)->open_plugins_folder();
+        }, this, FL_MENU_DIVIDER);
+        struct Node {
+            std::map<std::string, Node> folders;
+            std::vector<std::size_t> commands;
+        } root;
+        for (std::size_t i = 0; i < plugin_catalog_.commands.size(); ++i) {
+            Node *node = &root;
+            for (const auto &folder : plugin_catalog_.commands[i].folders) node = &node->folders[folder];
+            node->commands.push_back(i);
+            plugin_bindings_.push_back({this, i});
+        }
+        std::function<void(const Node &)> append = [&](const Node &node) {
+            for (const auto &folder : node.folders) {
+                append_plugin_item(folder.first, nullptr, nullptr, FL_SUBMENU);
+                append(folder.second);
+                plugin_menu_.push_back({});
+            }
+            for (auto i : node.commands) {
+                append_plugin_item(plugin_catalog_.commands[i].label, [](Fl_Widget *, void *v) {
+                    auto &binding = *static_cast<PluginBinding *>(v);
+                    binding.window->run_plugin(binding.index);
+                }, &plugin_bindings_[i]);
+            }
+        };
+        append(root);
+        if (plugin_catalog_.commands.empty()) append_plugin_item("No plugins installed", nullptr, nullptr, FL_MENU_INACTIVE);
+        if (!plugin_catalog_.errors.empty()) append_plugin_item("Show discovery errors...", [](Fl_Widget *, void *v) {
+            static_cast<EncryptEdWindow *>(v)->show_plugin_errors();
+        }, this);
+        plugin_menu_.push_back({});
+        auto *item = const_cast<Fl_Menu_Item *>(menu_->find_item("Plugins"));
+        if (item) item->user_data(plugin_menu_.data());
+        else menu_->add("Plugins", 0, nullptr, plugin_menu_.data(), FL_SUBMENU_POINTER);
+        menu_->redraw();
+        if (report_errors) show_plugin_errors();
+    }
+
+    void show_plugin_errors()
+    {
+        if (plugin_catalog_.errors.empty()) return;
+        std::string errors;
+        for (const auto &error : plugin_catalog_.errors) {
+            if (errors.size() > 3000) { errors += "\nAdditional errors omitted."; break; }
+            if (!errors.empty()) errors += '\n';
+            errors += error;
+        }
+        fl_alert("%s", errors.c_str());
+    }
+
+    void open_plugins_folder()
+    {
+        if (plugin_running_) return;
+        if (plugin_root_.empty()) { fl_alert("Could not determine the plugin directory."); return; }
+        std::error_code ec;
+        std::filesystem::create_directories(plugin_root_, ec);
+        if (ec) { fl_alert("Could not create plugin directory: %s", ec.message().c_str()); return; }
+        auto path = std::filesystem::absolute(plugin_root_, ec).generic_u8string();
+        if (ec) { fl_alert("Could not resolve plugin directory."); return; }
+        std::string uri = "file://";
+#ifdef _WIN32
+        uri += '/';
+#endif
+        const char *hex = "0123456789ABCDEF";
+        for (unsigned char ch : path) {
+            if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                (ch >= '0' && ch <= '9') || ch == '/' || ch == ':' || ch == '-' || ch == '_' || ch == '.') uri += ch;
+            else { uri += '%'; uri += hex[ch >> 4]; uri += hex[ch & 15]; }
+        }
+        char error[512]{};
+        if (!fl_open_uri(uri.c_str(), error, sizeof(error))) fl_alert("Could not open plugin folder: %s", error);
+    }
+
+    void run_plugin(std::size_t index)
+    {
+        if (plugin_running_ || index >= plugin_catalog_.commands.size()) return;
+        const auto &command = plugin_catalog_.commands[index];
+        std::string source, error;
+        if (!plugins::read_script(plugin_root_, command, source, error)) {
+            fl_alert("Plugin %s: %s", command.label.c_str(), error.c_str()); return;
+        }
+        plugins::Document document;
+        document.text = buffer_text();
+        document.cursor = static_cast<std::size_t>(editor_->insert_position());
+        int start = 0, end = 0;
+        if (buf_->selection_position(&start, &end)) {
+            document.selection_start = static_cast<std::size_t>(start);
+            document.selection_end = static_cast<std::size_t>(end);
+        }
+        document.indent_width = settings_.indent_width;
+        document.indent_spaces = settings_.indent_mode == AppSettings::INDENT_SPACES;
+        PluginDialogs dialogs("Plugin: " + command.label);
+        plugin_running_ = true;
+        fr_win_->hide();
+        deactivate();
+        auto result = plugins::run(source, "@" + command.path.filename().u8string(), document, dialogs);
+        activate();
+        plugin_running_ = false;
+        if (result.status == plugins::Status::Success) {
+            apply_plugin_text(*buf_, result.document);
+            editor_->insert_position(static_cast<int>(result.document.cursor));
+            if (result.document.selection_start != result.document.selection_end)
+                buf_->select(static_cast<int>(result.document.selection_start), static_cast<int>(result.document.selection_end));
+            else buf_->unselect();
+            editor_->show_insert_position();
+            update_cursor_pos();
+        } else if (result.status == plugins::Status::Error) {
+            fl_alert("Plugin %s failed:\n%s", command.label.c_str(), result.error.c_str());
+        }
+        editor_->take_focus();
+        refresh_menu_state();
+    }
 
     // ---- settings ----
 
@@ -1594,7 +1755,7 @@ class EncryptEdWindow : public Fl_Double_Window {
 
     void refresh_menu_state()
     {
-        if (menu_ == nullptr) return;
+        if (menu_ == nullptr || plugin_running_) return;
 
         const bool has_file = !filepath_.empty();
         set_item_enabled(menu_->find_item("File/Open Containing Folder"), has_file);
@@ -2500,6 +2661,7 @@ class EncryptEdWindow : public Fl_Double_Window {
     static void menu_cb(Fl_Widget *, void *v)
     {
         auto             *win  = static_cast<EncryptEdWindow *>(v);
+        if (win->plugin_running_) return;
         const Fl_Menu_Item *item = win->menu_->mvalue();
         if (!item || !item->label()) return;
         const char *lbl = item->label();
@@ -2516,7 +2678,8 @@ class EncryptEdWindow : public Fl_Double_Window {
         else if (!strcmp(lbl, "Mixed (Preserve)"))           win->set_line_endings_choice(TXX_NEWLINE_MIXED, true);
         else if (!strcmp(lbl, "Quit"))                       { if (win->check_unsaved()) win->hide(); }
         // Edit
-        else if (!strcmp(lbl, "Undo"))        Fl_Text_Editor::kf_undo(0,       win->editor_);
+        else if (!strcmp(lbl, "Undo"))        EditorTextBuffer::undo_key(0, win->editor_);
+        else if (!strcmp(lbl, "Redo"))        EditorTextBuffer::redo_key(0, win->editor_);
         else if (!strcmp(lbl, "Redo"))        Fl_Text_Editor::kf_redo(0,       win->editor_);
         else if (!strcmp(lbl, "Cut"))         Fl_Text_Editor::kf_cut(0,        win->editor_);
         else if (!strcmp(lbl, "Copy"))        Fl_Text_Editor::kf_copy(0,       win->editor_);
@@ -2542,7 +2705,7 @@ class EncryptEdWindow : public Fl_Double_Window {
     static void close_cb(Fl_Widget *, void *v)
     {
         auto *w = static_cast<EncryptEdWindow *>(v);
-        if (w->check_unsaved()) w->hide();
+        if (!w->plugin_running_ && w->check_unsaved()) w->hide();
     }
 
 public:
@@ -2555,7 +2718,7 @@ public:
     }
 
     void open_initial_path(const std::string &path) { do_open_path(path); }
-    void open_dropped_file(const std::string &path)  { do_open_path(path); }
+    void open_dropped_file(const std::string &path)  { if (!plugin_running_) do_open_path(path); }
 
     void resize(int x, int y, int w, int h) override
     {
@@ -2585,6 +2748,7 @@ public:
         sync_line_endings_menu();
 
         menu_->add("Edit/Undo",       FL_CTRL + 'z', menu_cb, this);
+        menu_->add("Edit/Redo",       FL_CTRL + FL_SHIFT + 'z', menu_cb, this);
         menu_->add("Edit/Redo",       FL_CTRL + 'y', menu_cb, this, FL_MENU_DIVIDER);
         menu_->add("Edit/Cut",        FL_CTRL + 'x', menu_cb, this);
         menu_->add("Edit/Copy",       FL_CTRL + 'c', menu_cb, this);
@@ -2601,13 +2765,15 @@ public:
         menu_->add("Edit/Text/Duplicate Current Line",         FL_CTRL + 'd',              menu_cb, this);
         menu_->add("Edit/Text/Remove Current Line",            FL_CTRL + FL_SHIFT + 'k',   menu_cb, this);
 
+        menu_->add("Plugins", 0, nullptr, nullptr, FL_SUBMENU_POINTER);
+
         menu_->add("Settings/Preferences...", 0, menu_cb, this);
 
         menu_->add("Help/About", 0, menu_cb, this);
 
-        buf_    = new Fl_Text_Buffer();
+        buf_    = new EditorTextBuffer();
         editor_ = new DndTextEditor(0, MENU_H, W, H - MENU_H - STAT_H,
-                      [this](const std::string &p){ do_open_path(p); });
+                      [this](const std::string &p){ if (!plugin_running_) do_open_path(p); });
         editor_->buffer(buf_);
         editor_->wrap_mode(Fl_Text_Editor::WRAP_AT_BOUNDS, 0);
         editor_->textfont(FL_COURIER);
@@ -2645,6 +2811,7 @@ public:
         load_settings();
         apply_settings();
 
+        reload_plugins(false);
         update_title();
         update_status();
         update_insert_mode();
@@ -2658,6 +2825,8 @@ public:
         delete md_hl_;
         password_.clear();
         delete fr_win_;
+        editor_->buffer(nullptr);
+        delete buf_;
     }
 };
 

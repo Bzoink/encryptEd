@@ -125,6 +125,30 @@ target_include_directories(encrypted_text_transform PUBLIC
 target_link_libraries(encrypted_text_transform PUBLIC encrypted_core)
 encrypted_apply_hardening(encrypted_text_transform)
 
+# Restricted embedded Lua: omit the interpreter and all I/O/module libraries.
+set(ENCRYPTED_LUA_SOURCES
+    lapi.c lcode.c lctype.c ldebug.c ldo.c ldump.c lfunc.c lgc.c llex.c
+    lmem.c lobject.c lopcodes.c lparser.c lstate.c lstring.c ltable.c
+    ltm.c lundump.c lvm.c lzio.c lauxlib.c lbaselib.c lstrlib.c
+    ltablib.c lmathlib.c lutf8lib.c
+)
+list(TRANSFORM ENCRYPTED_LUA_SOURCES PREPEND "lib/lua/src/")
+add_library(encrypted_lua STATIC ${ENCRYPTED_LUA_SOURCES})
+target_include_directories(encrypted_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/lib/lua/src)
+if(UNIX)
+    target_link_libraries(encrypted_lua PUBLIC m)
+endif()
+encrypted_apply_hardening(encrypted_lua)
+if(NOT MSVC)
+    # Upstream string.format constructs and validates its format strings at runtime.
+    target_compile_options(encrypted_lua PRIVATE -Wno-format-nonliteral)
+endif()
+
+add_library(encrypted_plugins STATIC src/plugins/runtime.cpp src/plugins/catalog.cpp)
+target_include_directories(encrypted_plugins PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(encrypted_plugins PRIVATE encrypted_lua PUBLIC encrypted_core)
+encrypted_apply_hardening(encrypted_plugins)
+
 add_executable(encrypted_cli
     src/tools/encrypted_cli.c
 )
@@ -175,6 +199,7 @@ if(WIN32 AND CMAKE_CROSSCOMPILING)
         target_link_libraries(encryptEd PRIVATE
             encrypted_core
             encrypted_text_transform
+            encrypted_plugins
             fltk::fltk
         )
         target_include_directories(encryptEd PRIVATE
@@ -264,13 +289,13 @@ if(TARGET fltk::fltk OR FLTK_CONFIG)
     )
     if(TARGET fltk::fltk)
         # CMake target: library order is handled automatically (works with static libs too).
-        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_text_transform fltk::fltk)
+        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_text_transform encrypted_plugins fltk::fltk)
     else()
         # Raw fltk-config flags: target_link_options places them before object files,
         # which is fine for shared libraries (system install).
         target_compile_options(encryptEd PRIVATE ${_fltk_cxx_list})
         target_link_options(encryptEd   PRIVATE ${_fltk_ld_list})
-        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_text_transform)
+        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_text_transform encrypted_plugins)
     endif()
     target_include_directories(encryptEd PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -396,6 +421,34 @@ if(ENCRYPTED_BUILD_TUI)
 endif()
 
 enable_testing()
+
+if(TARGET encryptEd)
+    add_executable(plugin_buffer_tests tests/plugin_buffer_tests.cpp)
+    target_link_libraries(plugin_buffer_tests PRIVATE encrypted_plugins)
+    if(TARGET fltk::fltk)
+        target_link_libraries(plugin_buffer_tests PRIVATE fltk::fltk)
+    else()
+        target_compile_options(plugin_buffer_tests PRIVATE ${_fltk_cxx_list})
+        target_link_options(plugin_buffer_tests PRIVATE ${_fltk_ld_list})
+    endif()
+    encrypted_make_windows_self_contained(plugin_buffer_tests -static-libstdc++)
+    encrypted_apply_hardening(plugin_buffer_tests)
+    add_test(NAME plugin_buffer_tests COMMAND plugin_buffer_tests)
+endif()
+
+add_executable(plugin_tests tests/plugin_tests.cpp)
+target_link_libraries(plugin_tests PRIVATE encrypted_plugins)
+target_compile_definitions(plugin_tests PRIVATE ENCRYPTED_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+encrypted_make_windows_self_contained(plugin_tests -static-libstdc++)
+encrypted_apply_hardening(plugin_tests)
+add_test(NAME plugin_tests COMMAND plugin_tests)
+
+install(DIRECTORY examples/plugins/ DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/encryptEd/plugin-examples
+    COMPONENT ${ENCRYPTED_INSTALL_COMPONENT_GUI})
+install(FILES docs/plugins.md DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/encryptEd
+    COMPONENT ${ENCRYPTED_INSTALL_COMPONENT_GUI})
+install(FILES lib/lua/LICENSE DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/encryptEd/licenses
+    RENAME Lua.txt COMPONENT ${ENCRYPTED_INSTALL_COMPONENT_GUI})
 
 add_executable(encrypted_core_tests
     tests/core_tests.c

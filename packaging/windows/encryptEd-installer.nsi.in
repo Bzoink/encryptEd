@@ -163,6 +163,8 @@ Section "Uninstall"
   DeleteRegKey /IfEmpty ShCtx "${PRODUCT_INSTALL_KEY}"
 
   RMDir /r "$InstDir\bin"
+  RMDir /r "$InstDir\share\encryptEd"
+  RMDir "$InstDir\share"
   Delete "$InstDir\Uninstall.exe"
   RMDir "$InstDir"
 SectionEnd
