@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@
 #include <ftxui/dom/elements.hpp>
 #include <ftxui/screen/color.hpp>
 #include <ftxui/screen/terminal.hpp>
+#include <ftxui/screen/string.hpp>
 
 #ifndef _WIN32
 #include <termios.h>
@@ -30,9 +32,14 @@ extern "C" {
 #include "platform/file_io.h"
 }
 
+#include "app/about.h"
+#include "app/size_format.h"
 #include "gui/text_transform.h"
 #include "tui/clipboard.h"
 #include "tui/config.h"
+#include "tui/cursor.h"
+#include "tui/plugin_buffer.h"
+#include "tui/plugin_dialog.h"
 #include "tui/edit_buffer.h"
 #include "tui/md_parse.h"
 #include "tui/syn_parse.h"
@@ -89,6 +96,7 @@ public:
     bool Focusable() const override { return true; }
 
     Element Render() override {
+        hide_cursor_for_redraw();
         Dimensions dim = Terminal::Size();
         int rows = std::max(1, dim.dimy - 2);
         ensure_visible(rows);
@@ -110,6 +118,14 @@ public:
         }
 
         Element editor = vbox(std::move(doc)) | flex;
+        if (settings_.vertical_scrollbar && total > rows) {
+            const int thumb_height = std::max(1, rows * rows / total);
+            const int thumb_top = scroll_top_ * (rows - thumb_height) / (total - rows);
+            Elements track;
+            for (int i = 0; i < rows; ++i)
+                track.push_back(text(i >= thumb_top && i < thumb_top + thumb_height ? "█" : "░"));
+            editor = hbox({editor, vbox(std::move(track)) | size(WIDTH, EQUAL, 1)});
+        }
         Element top    = render_menu_bar();
         Element bottom = render_status();
         Element base   = vbox({top, editor, bottom});
@@ -120,11 +136,27 @@ public:
             base = dbox({base, render_picker_overlay()});
         if (dialog_kind_ != DialogKind::None)
             base = dbox({base, render_dialog()});
+        if (search_panel_open_)
+            base = dbox({base, search_panel_->Render()});
 
-        return base;
+        return cursor_frame(base);
     }
 
     bool OnEvent(Event event) override {
+        if (plugin_running_) return true;
+        if (search_panel_open_) {
+            if (event == Event::Escape) { search_panel_open_ = false; return true; }
+            if (event == Event::F3 || event.input() == "\x1b[13~") {
+                find_match(last_find_, false, buffer_.has_selection() && buffer_.selected_text() == last_find_);
+                return true;
+            }
+            if (event == Event::F2 || event.input() == "\x1b[12~") {
+                find_match(last_find_, true, true);
+                return true;
+            }
+            search_panel_->OnEvent(event);
+            return true;
+        }
         if (menu_open_ >= 0)                  return menu_event(event);
         if (dialog_kind_ != DialogKind::None) return dialog_event(event);
         if (picker_open_)                     return picker_event(event);
@@ -182,7 +214,7 @@ private:
 
         // ---- Edit ----------------------------------------------------------
         std::vector<MenuEntry> ed;
-        ed.push_back({"Undo",       "Ctrl+Z", [this]{ edit([&]{ buffer_.undo(); }); }});
+        ed.push_back({"Undo",       "Alt+Z", [this]{ edit([&]{ buffer_.undo(); }); }});
         ed.push_back({"Redo",       "Ctrl+Y", [this]{ edit([&]{ buffer_.redo(); }); }});
         ed.push_back({});
         ed.push_back({"Cut",        "Ctrl+X", [this]{ cmd_cut(); }});
@@ -191,6 +223,9 @@ private:
         ed.push_back({"Select All", "Ctrl+A", [this]{ buffer_.select_all(); }});
         ed.push_back({});
         ed.push_back({"Find...",       "Ctrl+F", [this]{ cmd_find(); }});
+        ed.push_back({"Find Next", "F3", [this]{ repeat_find(false); }});
+        ed.push_back({"Find Previous", "F2", [this]{ repeat_find(true); }});
+        ed.push_back({"Find / Replace...", "Ctrl+R", [this]{ cmd_replace(); }});
         ed.push_back({"Go to Line...", "Ctrl+G", [this]{ cmd_goto(); }});
         // Text transforms submenu
         std::vector<MenuEntry> tx;
@@ -207,9 +242,15 @@ private:
         tx.push_back({"Remove Line",    "Ctrl+K", [this]{ edit([&]{ buffer_.remove_line(); }); }});
         ed.push_back({"Text", "", nullptr, std::move(tx)});
         menus_.push_back({"Edit", std::move(ed)});
+        plugin_catalog_ = plugins::discover(plugin_root_);
+        menus_.push_back({"Plugins", plugin_menu_entries()});
 
         // ---- Settings ------------------------------------------------------
         std::vector<MenuEntry> se;
+        se.push_back({"Vertical Scrollbar", "", [this]{
+            settings_.vertical_scrollbar = !settings_.vertical_scrollbar;
+            config_save(settings_);
+        }, {}, [this]{ return settings_.vertical_scrollbar; }, true});
         se.push_back({"Syntax Highlighting", "", [this]{
             settings_.syn_highlight = !settings_.syn_highlight;
             config_save(settings_);
@@ -228,6 +269,9 @@ private:
         se.push_back({"Status: Byte Count", "", [this]{
             settings_.status_count = AppSettings::STATUS_COUNT_BYTES; config_save(settings_);
         }, {}, [this]{ return settings_.status_count == AppSettings::STATUS_COUNT_BYTES; }});
+        se.push_back({"Status: Readable Size", "", [this]{
+            settings_.status_count = AppSettings::STATUS_COUNT_SIZE; config_save(settings_);
+        }, {}, [this]{ return settings_.status_count == AppSettings::STATUS_COUNT_SIZE; }});
         menus_.push_back({"Settings", std::move(se)});
 
         // ---- Help ----------------------------------------------------------
@@ -393,7 +437,7 @@ private:
         // Locate cursor within this line so we can split a styled segment at it.
         bool show_cursor = (line_idx == buffer_.cursor().line &&
                             menu_open_ < 0 && dialog_kind_ == DialogKind::None &&
-                            !picker_open_);
+                            !picker_open_ && !search_panel_open_);
         std::size_t cur_b = 0, cur_clen = 0;
         if (show_cursor) {
             cur_b = byte_at(ln, buffer_.cursor().col);
@@ -476,7 +520,9 @@ private:
         std::string count =
             settings_.status_count == AppSettings::STATUS_COUNT_BYTES
                 ? std::to_string(buffer_.byte_count()) + " bytes"
-                : std::to_string(buffer_.char_count()) + " chars";
+                : settings_.status_count == AppSettings::STATUS_COUNT_SIZE
+                    ? human_readable_size(buffer_.byte_count())
+                    : std::to_string(buffer_.char_count()) + " chars";
         std::string right = count + "  " + newline_label(settings_.newline_style) +
                             "  Ln " + std::to_string(c.line + 1) +
                             ", Col " + std::to_string(c.col + 1) +
@@ -491,8 +537,7 @@ private:
 
         // Helper: render a single button, reflected for mouse hit-testing.
         auto make_btn = [](const std::string &label, bool active, Box &box) -> Element {
-            Element e = text("[ " + label + " ]");
-            if (active) e = e | inverted;
+            Element e = ButtonOption::Simple().transform({label, false, active, active});
             return e | reflect(box);
         };
 
@@ -500,16 +545,22 @@ private:
         rows.push_back(text(""));  // top padding
 
         if (!dialog_body_.empty())
-            rows.push_back(text("  " + dialog_body_) | size(WIDTH, EQUAL, inner_w));
+            rows.push_back(paragraph("  " + dialog_body_) | size(WIDTH, EQUAL, inner_w));
 
         if (dialog_kind_ == DialogKind::Prompt) {
             if (!dialog_body_.empty()) rows.push_back(text(""));
-            std::string shown = dialog_mask_
-                ? std::string(dialog_input_.size(), '*') : dialog_input_;
-            rows.push_back(
-                hbox({text("  > "), text(shown),
-                      text(" ") | inverted | focusCursorBarBlinking, filler()})
-                | size(WIDTH, EQUAL, inner_w));
+            const std::size_t cursor = std::min(dialog_cursor_, dialog_input_.size());
+            std::string before = dialog_input_.substr(0, cursor);
+            std::string after = dialog_input_.substr(cursor);
+            if (dialog_mask_) {
+                before.assign(Utf8ToGlyphs(before).size(), '*');
+                after.assign(Utf8ToGlyphs(after).size(), '*');
+            }
+            auto marker = text(after.empty() ? " " : after.substr(0, utf8_next(after, 0)));
+            if (dialog_btn_ == -1) marker = marker | inverted | focusCursorBarBlinking;
+            rows.push_back(hbox({text("  > "), text(before), marker,
+                text(after.empty() ? "" : after.substr(utf8_next(after, 0))), filler()})
+                | size(WIDTH, EQUAL, inner_w) | reflect(dialog_input_box_));
         }
 
         rows.push_back(text(""));  // spacer before buttons
@@ -526,8 +577,8 @@ private:
             rows.push_back(hbox({filler(), std::move(b0), text("    "),
                                            std::move(b1), filler()}));
         } else {  // Prompt
-            Element b0 = make_btn("OK",     false, dialog_btn0_box_);
-            Element b1 = make_btn("Cancel", false, dialog_btn1_box_);
+            Element b0 = make_btn("OK",     dialog_btn_ == 0, dialog_btn0_box_);
+            Element b1 = make_btn("Cancel", dialog_btn_ == 1, dialog_btn1_box_);
             rows.push_back(hbox({filler(), std::move(b0), text("    "),
                                            std::move(b1), filler()}));
         }
@@ -538,7 +589,7 @@ private:
                     | clear_under
                     | size(WIDTH, EQUAL, dw);
 
-        int dh = 7 + (!dialog_body_.empty() && dialog_kind_ == DialogKind::Prompt ? 2 : 0);
+        int dh = 9 + (!dialog_body_.empty() && dialog_kind_ == DialogKind::Prompt ? 2 : 0);
         int dx = std::max(0, (dim.dimx - dw) / 2);
         int dy = std::max(1, (dim.dimy - dh) / 2);
         return place_at(dx, dy, dlg);
@@ -551,7 +602,7 @@ private:
     int picker_view_h() const {
         Dimensions dim = Terminal::Size();
         int extra = (picker_mode_ == PickerMode::Save) ? 3 : 0;
-        return std::min(14, std::max(3, dim.dimy - 8 - extra));
+        return std::min(14, std::max(3, dim.dimy - 12 - extra));
     }
 
     static bool ci_less(const std::string &a, const std::string &b) {
@@ -595,19 +646,29 @@ private:
 
     // Populate picker_entries_ from `dir`: ".." (unless at root), directories,
     // then files — dotfiles hidden, directories first, case-insensitive sort.
-    void picker_load(const std::filesystem::path &dir) {
+    bool picker_load(const std::filesystem::path &dir) {
         namespace fs = std::filesystem;
         std::error_code ec;
-        fs::path abs = fs::weakly_canonical(dir, ec);
-        if (ec || abs.empty()) { ec.clear(); abs = fs::absolute(dir, ec); }
-        if (abs.empty()) abs = dir;
+        // A bare filename has an empty parent_path(). Treat that as the
+        // current directory, rather than asking directory_iterator to list "".
+        fs::path requested = dir.empty() ? fs::current_path(ec) : dir;
+        if (ec) {
+            show_alert("Cannot Open", "Cannot determine current directory: " + ec.message());
+            return false;
+        }
+        fs::path abs = fs::weakly_canonical(requested, ec);
+        if (ec || abs.empty()) { ec.clear(); abs = fs::absolute(requested, ec); }
+        if (ec) {
+            show_alert("Cannot Open", "Cannot resolve directory: " + requested.string() + "\n" + ec.message());
+            return false;
+        }
 
         std::vector<PickerEntry> entries;
         ec.clear();
-        fs::directory_iterator it(abs, fs::directory_options::skip_permission_denied, ec);
+        fs::directory_iterator it(abs, ec);
         if (ec) {
-            show_alert("Cannot Open", "Cannot read directory: " + abs.string());
-            return;
+            show_alert("Cannot Open", "Cannot read directory: " + abs.string() + "\n" + ec.message());
+            return false;
         }
         for (fs::directory_iterator end; it != end; it.increment(ec)) {
             if (ec) break;
@@ -615,6 +676,10 @@ private:
             if (name.empty() || name[0] == '.') continue;  // hide dotfiles
             std::error_code dec;
             entries.push_back({name, it->is_directory(dec)});
+        }
+        if (ec) {
+            show_alert("Cannot Open", "Cannot read directory: " + abs.string() + "\n" + ec.message());
+            return false;
         }
         std::sort(entries.begin(), entries.end(),
                   [](const PickerEntry &a, const PickerEntry &b) {
@@ -628,6 +693,7 @@ private:
         picker_entries_ = std::move(entries);
         picker_sel_     = 0;
         picker_scroll_  = 0;
+        return true;
     }
 
     void picker_clamp_scroll(int view_h) {
@@ -656,8 +722,8 @@ private:
         rows.push_back(text(" " + dirstr) | size(WIDTH, EQUAL, inner_w));
         rows.push_back(separator());
 
-        picker_row_boxes_.resize(view_h);
-        bool list_focused = !save || save_focus_ == FOCUS_LIST;
+        picker_row_boxes_.assign(view_h, Box{-1, -1, -1, -1});
+        bool list_focused = save_focus_ == FOCUS_LIST;
         if (total == 0) {
             rows.push_back(text("  (empty)") | size(WIDTH, EQUAL, inner_w));
             for (int i = 1; i < view_h; ++i) rows.push_back(text(""));
@@ -724,11 +790,21 @@ private:
                            | size(WIDTH, EQUAL, inner_w));
         }
 
+        rows.push_back(separator());
+        auto button = [&](const std::string &label, int focus_id, Box &box) {
+            const bool active = save_focus_ == focus_id;
+            auto result = ButtonOption::Simple().transform({label, false, active, active});
+            return result | reflect(box);
+        };
+        rows.push_back(hbox({filler(), button("Parent", FOCUS_PARENT, picker_parent_box_),
+            text("  "), button(save ? "Save" : "Open", FOCUS_ACTION, picker_action_box_),
+            text("  "), button("Cancel", FOCUS_CANCEL, picker_cancel_box_), filler()}));
+
         Element dlg = window(text(save ? " Save File " : " Open File "),
                              vbox(std::move(rows)))
                     | clear_under | size(WIDTH, EQUAL, dw);
 
-        int dh = view_h + 6 + (save ? 3 : 0);  // +name +checkbox +separator
+        int dh = view_h + 10 + (save ? 3 : 0);  // +name +checkbox +separator
         int dx = std::max(0, (dim.dimx - dw) / 2);
         int dy = std::max(1, (dim.dimy - dh) / 2);
         return place_at(dx, dy, dlg);
@@ -754,6 +830,34 @@ private:
         int len = 0;
         utf8_decode_next(s.c_str() + pos, s.c_str() + s.size(), &len);
         return pos + std::max(1, len);
+    }
+
+    static std::size_t byte_at_cell(const std::string &value, int cell) {
+        std::size_t offset = 0;
+        int width = 0;
+        while (offset < value.size()) {
+            const auto next = utf8_next(value, offset);
+            const int glyph_width = string_width(value.substr(offset, next - offset));
+            if (width + glyph_width > std::max(0, cell)) break;
+            width += glyph_width;
+            offset = next;
+        }
+        return offset;
+    }
+
+    void picker_activate() {
+        if (picker_entries_.empty()) return;
+        const PickerEntry entry = picker_entries_[picker_sel_];
+        if (entry.name == "..") picker_load(picker_dir_.parent_path());
+        else if (entry.is_dir) picker_load(picker_dir_ / entry.name);
+        else if (picker_mode_ == PickerMode::Save) {
+            save_name_ = entry.name;
+            save_cursor_ = save_name_.size();
+            save_focus_ = FOCUS_NAME;
+        } else {
+            const std::string full = (picker_dir_ / entry.name).string();
+            if (open_path_flow(full)) picker_open_ = false;
+        }
     }
 
     void name_backspace() {
@@ -802,8 +906,18 @@ private:
                            m.y >= b.y_min && m.y <= b.y_max;
                 };
 
+                if (hit(picker_cancel_box_)) { picker_open_ = false; return true; }
+                if (hit(picker_parent_box_)) {
+                    picker_load(picker_dir_.parent_path());
+                    return true;
+                }
+                if (hit(picker_action_box_)) {
+                    if (save) commit_save(); else picker_activate();
+                    return true;
+                }
                 if (save && hit(picker_name_box_)) {
                     save_focus_        = FOCUS_NAME;
+                    save_cursor_ = byte_at_cell(save_name_, m.x - picker_name_box_.x_min - 7);
                     picker_last_click_ = -1;
                     return true;
                 }
@@ -819,23 +933,11 @@ private:
                     if (idx >= total) break;
                     if (!hit(picker_row_boxes_[i])) continue;
 
-                    if (save) save_focus_ = FOCUS_LIST;
+                    save_focus_ = FOCUS_LIST;
 
                     if (picker_sel_ == idx && picker_last_click_ == idx) {
                         picker_last_click_ = -1;
-                        const PickerEntry entry = picker_entries_[idx];
-                        if (entry.name == "..") {
-                            picker_load(picker_dir_.parent_path());
-                        } else if (entry.is_dir) {
-                            picker_load(picker_dir_ / entry.name);
-                        } else if (save) {
-                            save_name_   = entry.name;
-                            save_cursor_ = save_name_.size();
-                            save_focus_  = FOCUS_NAME;
-                        } else {
-                            std::string full = (picker_dir_ / entry.name).string();
-                            if (open_path_flow(full)) picker_open_ = false;
-                        }
+                        picker_activate();
                     } else {
                         picker_sel_        = idx;
                         picker_last_click_ = idx;
@@ -849,11 +951,29 @@ private:
             return true;
         }
 
+        if (e == Event::Tab || e == Event::TabReverse) {
+            const std::vector<int> controls = save
+                ? std::vector<int>{FOCUS_LIST, FOCUS_NAME, FOCUS_ENC, FOCUS_PARENT, FOCUS_ACTION, FOCUS_CANCEL}
+                : std::vector<int>{FOCUS_LIST, FOCUS_PARENT, FOCUS_ACTION, FOCUS_CANCEL};
+            auto it = std::find(controls.begin(), controls.end(), save_focus_);
+            int index = it == controls.end() ? 0 : static_cast<int>(it - controls.begin());
+            index = (index + (e == Event::Tab ? 1 : static_cast<int>(controls.size()) - 1)) % controls.size();
+            save_focus_ = controls[index];
+            return true;
+        }
+        if (save_focus_ >= FOCUS_PARENT) {
+            if (e == Event::Return || e.input() == " ") {
+                if (save_focus_ == FOCUS_CANCEL) picker_open_ = false;
+                else if (save_focus_ == FOCUS_PARENT) picker_load(picker_dir_.parent_path());
+                else if (save) commit_save();
+                else picker_activate();
+            }
+            return true;
+        }
+
         // Save mode — filename input has focus.
         if (save && save_focus_ == FOCUS_NAME) {
             if (e == Event::Return)     { commit_save();                              return true; }
-            if (e == Event::Tab)        { save_focus_ = FOCUS_ENC;                   return true; }
-            if (e == Event::TabReverse) { save_focus_ = FOCUS_LIST;                  return true; }
             if (e == Event::ArrowUp)    { save_focus_ = FOCUS_LIST;                  return true; }
             if (e == Event::ArrowDown)  { save_focus_ = FOCUS_ENC;                   return true; }
             if (e == Event::ArrowLeft)  { save_cursor_ = utf8_prev(save_name_, save_cursor_); return true; }
@@ -868,17 +988,12 @@ private:
         // Save mode — encrypted checkbox has focus.
         if (save && save_focus_ == FOCUS_ENC) {
             if (e == Event::Return || e.input() == " ") { toggle_encrypted(); return true; }
-            if (e == Event::Tab)        { save_focus_ = FOCUS_LIST; return true; }
-            if (e == Event::TabReverse) { save_focus_ = FOCUS_NAME; return true; }
             if (e == Event::ArrowUp)    { save_focus_ = FOCUS_NAME; return true; }
             if (e == Event::ArrowDown)  { save_focus_ = FOCUS_LIST; return true; }
             return true;
         }
 
-        // List focus — open mode always, save mode when the list is focused.
-        if (save && e == Event::Tab)        { save_focus_ = FOCUS_NAME; return true; }
-        if (save && e == Event::TabReverse) { save_focus_ = FOCUS_ENC;  return true; }
-
+        // List focus.
         if (e == Event::ArrowDown || (!save && e.input() == "j")) { picker_move(+1, view_h); return true; }
         if (e == Event::ArrowUp   || (!save && e.input() == "k")) { picker_move(-1, view_h); return true; }
         if (e == Event::PageDown) { picker_move(view_h, view_h);  return true; }
@@ -904,23 +1019,7 @@ private:
             return true;
         }
 
-        if (e == Event::Return) {
-            if (!total) return true;
-            const PickerEntry entry = picker_entries_[picker_sel_];
-            if (entry.name == "..") {
-                picker_load(picker_dir_.parent_path());
-            } else if (entry.is_dir) {
-                picker_load(picker_dir_ / entry.name);
-            } else if (save) {
-                save_name_   = entry.name;
-                save_cursor_ = save_name_.size();
-                save_focus_  = FOCUS_NAME;
-            } else {
-                std::string full = (picker_dir_ / entry.name).string();
-                if (open_path_flow(full)) picker_open_ = false;
-            }
-            return true;
-        }
+        if (e == Event::Return) { picker_activate(); return true; }
 
         return true;  // modal swallows all other input
     }
@@ -1186,6 +1285,9 @@ private:
 
     // ---- Editor event (menu closed, no prompt) -----------------------------
     bool editor_event(Event e) {
+        if (e == Event::F3 || e.input() == "\x1b[13~") { repeat_find(false); return true; }
+        if (e == Event::F2 || e.input() == "\x1b[12~") { repeat_find(true); return true; }
+
         // F9 / F10 open the File menu (F9 = mcedit convention; F10 works in
         // terminals that don't intercept it).
         if (e == Event::F9 || e == Event::F10) { open_top(0); return true; }
@@ -1201,6 +1303,9 @@ private:
         }
 
         const std::string &in = e.input();
+        // FTXUI 5 discards the CAN/SUB bytes used by Ctrl+X and Ctrl+Z.
+        if (in == "\x1bz") { edit([&]{ buffer_.undo(); }); return true; }
+        if (in == "\x1by") { edit([&]{ buffer_.redo(); }); return true; }
         if (in.size() == 1) {
             switch (static_cast<unsigned char>(in[0])) {
                 case 0x0e: cmd_new(); return true;
@@ -1214,6 +1319,7 @@ private:
                 case 0x16: cmd_paste(); return true;
                 case 0x01: buffer_.select_all(); return true;
                 case 0x06: cmd_find(); return true;
+                case 0x12: cmd_replace(); return true;
                 case 0x07: cmd_goto(); return true;
                 case 0x04: edit([&]{ buffer_.duplicate_line(); }); return true;
                 case 0x0b: edit([&]{ buffer_.remove_line(); }); return true;
@@ -1261,17 +1367,37 @@ private:
         if (m.button == Mouse::WheelUp)   { buffer_.move_page(-3, false); return true; }
         if (m.button == Mouse::WheelDown) { buffer_.move_page( 3, false); return true; }
         if (m.button == Mouse::Left) {
-            // Open menu when clicking row 0 (menu bar).
+            // A release after toggling a menu closed belongs to the same
+            // click; only a press on a closed menu should open it again.
             if (m.y == 0) {
-                int top = top_menu_at(m.x);
-                if (top >= 0) { open_top(top); return true; }
+                if (m.motion == Mouse::Pressed) {
+                    int top = top_menu_at(m.x);
+                    if (top >= 0) {
+                        menu_mouse_held_ = true;
+                        open_top(top);
+                    }
+                }
+                return true;
+            }
+            const auto dim = Terminal::Size();
+            const int rows = std::max(1, dim.dimy - 2);
+            if (settings_.vertical_scrollbar && buffer_.line_count() > rows &&
+                m.x == dim.dimx - 1 && m.y >= 1 && m.y <= rows) {
+                if (m.motion != Mouse::Released) {
+                    const int target = (m.y - 1) * (buffer_.line_count() - rows) /
+                                       std::max(1, rows - 1);
+                    scroll_top_ = target;
+                    const int cursor_line = std::clamp(buffer_.cursor().line, target, target + rows - 1);
+                    buffer_.set_cursor({cursor_line, buffer_.cursor().col});
+                    buffer_.clear_selection();
+                }
+                mouse_down_ = false;
                 return true;
             }
             // Editor area: row 1 = first editor line.
             int line = scroll_top_ + m.y - 1;
-            int col  = m.x;
-            if (line < 0) line = 0;
-            if (col  < 0) col  = 0;
+            line = std::clamp(line, 0, buffer_.line_count() - 1);
+            const int col = col_at(buffer_.line(line), byte_at_cell(buffer_.line(line), m.x));
             Position p{line, col};
             if (m.motion == Mouse::Released) {
                 mouse_down_ = false;
@@ -1293,11 +1419,12 @@ private:
     void show_prompt(std::string title, bool mask, std::string initial,
                      std::function<void(bool, std::string)> cb) {
         dialog_kind_  = DialogKind::Prompt;
-        dialog_btn_   = 0;
+        dialog_btn_   = -1;
         dialog_title_ = std::move(title);
         dialog_body_  = {};
         dialog_mask_  = mask;
         dialog_input_ = std::move(initial);
+        dialog_cursor_ = dialog_input_.size();
         dialog_cb_    = std::move(cb);
     }
 
@@ -1313,13 +1440,11 @@ private:
     }
 
     void show_alert(std::string title, std::string body) {
-        dialog_kind_  = DialogKind::Alert;
-        dialog_btn_   = 0;
-        dialog_title_ = std::move(title);
-        dialog_body_  = std::move(body);
-        dialog_mask_  = false;
-        dialog_input_ = {};
-        dialog_cb_    = nullptr;
+        TuiPluginDialogs dialogs(std::move(title));
+        plugins::DialogRequest request{};
+        request.kind = plugins::DialogKind::Message;
+        request.prompt = std::move(body);
+        dialogs.show(request);
     }
 
     bool dialog_event(Event e) {
@@ -1331,6 +1456,18 @@ private:
                     return m.x >= b.x_min && m.x <= b.x_max &&
                            m.y >= b.y_min && m.y <= b.y_max;
                 };
+                if (dialog_kind_ == DialogKind::Prompt && hit(dialog_input_box_)) {
+                    dialog_btn_ = -1;
+                    if (dialog_mask_) {
+                        int count = std::max(0, m.x - dialog_input_box_.x_min - 4);
+                        dialog_cursor_ = 0;
+                        while (count-- > 0 && dialog_cursor_ < dialog_input_.size())
+                            dialog_cursor_ = utf8_next(dialog_input_, dialog_cursor_);
+                    } else {
+                        dialog_cursor_ = byte_at_cell(dialog_input_, m.x - dialog_input_box_.x_min - 4);
+                    }
+                    return true;
+                }
                 if (hit(dialog_btn0_box_)) { close_dialog(true);  return true; }
                 if (dialog_kind_ != DialogKind::Alert && hit(dialog_btn1_box_))
                     { close_dialog(false); return true; }
@@ -1360,19 +1497,35 @@ private:
             return true;
         }
 
-        // Prompt — Enter submits, Esc cancels regardless of button focus.
-        if (e == Event::Escape)   { close_dialog(false); return true; }
-        if (e == Event::Return)   { close_dialog(true);  return true; }
-        if (e == Event::Backspace) {
-            if (!dialog_input_.empty()) {
-                std::size_t n = dialog_input_.size();
-                do { --n; } while (n > 0 &&
-                    (static_cast<unsigned char>(dialog_input_[n]) & 0xC0) == 0x80);
-                dialog_input_.erase(n);
-            }
+        if (e == Event::Escape) { close_dialog(false); return true; }
+        if (e == Event::Tab || e == Event::TabReverse) {
+            dialog_btn_ = (dialog_btn_ + (e == Event::Tab ? 2 : 3)) % 3 - 1;
             return true;
         }
-        if (e.is_character()) { dialog_input_ += e.character(); return true; }
+        if (e == Event::Return) { close_dialog(dialog_btn_ != 1); return true; }
+        if (dialog_btn_ != -1) {
+            if (e.input() == " ") close_dialog(dialog_btn_ == 0);
+            return true;
+        }
+        if (e == Event::ArrowLeft) { dialog_cursor_ = utf8_prev(dialog_input_, dialog_cursor_); return true; }
+        if (e == Event::ArrowRight) { dialog_cursor_ = utf8_next(dialog_input_, dialog_cursor_); return true; }
+        if (e == Event::Home) { dialog_cursor_ = 0; return true; }
+        if (e == Event::End) { dialog_cursor_ = dialog_input_.size(); return true; }
+        if (e == Event::Backspace) {
+            const auto previous = utf8_prev(dialog_input_, dialog_cursor_);
+            dialog_input_.erase(previous, dialog_cursor_ - previous);
+            dialog_cursor_ = previous;
+            return true;
+        }
+        if (e == Event::Delete) {
+            dialog_input_.erase(dialog_cursor_, utf8_next(dialog_input_, dialog_cursor_) - dialog_cursor_);
+            return true;
+        }
+        if (e.is_character()) {
+            dialog_input_.insert(dialog_cursor_, e.character());
+            dialog_cursor_ += e.character().size();
+            return true;
+        }
         return true;
     }
 
@@ -1383,6 +1536,136 @@ private:
         dialog_cb_    = nullptr;
         dialog_input_.clear();
         if (cb) cb(accepted, val);
+    }
+
+    // ---- Lua plugins -------------------------------------------------------
+    static MenuEntry plugin_entry(std::string label, std::function<void()> action = {}) {
+        MenuEntry entry{};
+        entry.label = std::move(label); entry.action = std::move(action);
+        return entry;
+    }
+
+    std::vector<MenuEntry> plugin_folder_entries(const std::vector<std::string> &prefix,
+                                                bool submenu) {
+        std::map<std::string, std::vector<std::string>> folders;
+        std::vector<std::size_t> commands;
+        for (std::size_t i = 0; i < plugin_catalog_.commands.size(); ++i) {
+            const auto &command = plugin_catalog_.commands[i];
+            if (command.folders.size() < prefix.size() ||
+                !std::equal(prefix.begin(), prefix.end(), command.folders.begin())) continue;
+            if (command.folders.size() == prefix.size()) commands.push_back(i);
+            else {
+                auto path = prefix; path.push_back(command.folders[prefix.size()]);
+                folders[path.back()] = path;
+            }
+        }
+        std::vector<MenuEntry> entries;
+        for (const auto &folder : folders) {
+            auto entry = plugin_entry(folder.first + (submenu ? "" : "/"),
+                [this, path = folder.second] { browse_plugin_folder(path); });
+            if (submenu) entry.sub = plugin_folder_entries(folder.second, false);
+            entries.push_back(std::move(entry));
+        }
+        for (auto index : commands)
+            entries.push_back(plugin_entry(plugin_catalog_.commands[index].label,
+                [this, index] { run_plugin(index); }));
+        return entries;
+    }
+
+    std::vector<MenuEntry> plugin_menu_entries() {
+        std::vector<MenuEntry> entries{
+            plugin_entry("Install Default Plugins", [this] { install_default_plugins(); }),
+            plugin_entry("Reload Plugins", [this] { reload_plugins(true); }),
+            plugin_entry("Show Plugins Folder", [this] {
+                plugin_message(plugin_root_.empty() ? "Could not determine the plugin directory."
+                                                   : plugin_root_.u8string());
+            }), plugin_entry("")};
+        auto commands = plugin_folder_entries({}, true);
+        entries.insert(entries.end(), commands.begin(), commands.end());
+        if (commands.empty()) entries.push_back(plugin_entry("No plugins installed"));
+        if (!plugin_catalog_.errors.empty()) entries.push_back(plugin_entry("Show discovery errors",
+            [this] { plugin_errors(); }));
+        return entries;
+    }
+
+    void plugin_message(const std::string &message) {
+        TuiPluginDialogs dialogs("Plugins");
+        plugins::DialogRequest request{};
+        request.kind = plugins::DialogKind::Message; request.prompt = message;
+        dialogs.show(request);
+    }
+
+    void plugin_errors() {
+        std::string errors;
+        for (const auto &error : plugin_catalog_.errors) errors += error + "\n";
+        if (!errors.empty()) plugin_message(errors);
+    }
+
+    void reload_plugins(bool report_errors) {
+        if (plugin_running_) return;
+        close_menu();
+        plugin_catalog_ = plugins::discover(plugin_root_);
+        for (auto &menu : menus_) if (menu.title == "Plugins") menu.items = plugin_menu_entries();
+        set_status("Loaded " + std::to_string(plugin_catalog_.commands.size()) + " plugins");
+        if (report_errors) plugin_errors();
+    }
+
+    void install_default_plugins() {
+        if (plugin_running_) return;
+        auto result = plugins::install_defaults(plugins::default_directory(plugins::executable_path()), plugin_root_);
+        reload_plugins(false);
+        std::string message = "Installed " + std::to_string(result.installed) + " plugins; kept " +
+            std::to_string(result.skipped.size()) + " existing files.";
+        for (const auto &path : result.skipped) message += "\nKept: " + path;
+        for (const auto &error : result.errors) message += "\n" + error;
+        plugin_message(message);
+    }
+
+    // Existing dropdowns have one submenu level. A modal browser handles deeper folders.
+    void browse_plugin_folder(std::vector<std::string> path) {
+        while (true) {
+            auto entries = plugin_folder_entries(path, false);
+            plugins::DialogRequest request{};
+            request.kind = plugins::DialogKind::Choose;
+            request.prompt = "Choose a plugin or folder:";
+            if (!path.empty()) request.choices.push_back(".. (Back)");
+            for (const auto &entry : entries) request.choices.push_back(entry.label);
+            if (request.choices.empty()) return;
+            TuiPluginDialogs dialogs("Plugins");
+            auto reply = dialogs.show(request);
+            if (!reply.accepted) return;
+            if (!path.empty() && reply.choice == 1) { path.pop_back(); continue; }
+            auto index = static_cast<std::size_t>(reply.choice - 1 - (!path.empty() ? 1 : 0));
+            if (index >= entries.size()) return;
+            if (!entries[index].label.empty() && entries[index].label.back() == '/') {
+                path.push_back(entries[index].label.substr(0, entries[index].label.size() - 1));
+                continue;
+            }
+            if (entries[index].action) entries[index].action();
+            return;
+        }
+    }
+
+    void run_plugin(std::size_t index) {
+        if (plugin_running_ || index >= plugin_catalog_.commands.size()) return;
+        const auto &command = plugin_catalog_.commands[index];
+        std::string source, error;
+        if (!plugins::read_script(plugin_root_, command, source, error)) {
+            plugin_message(error); return;
+        }
+        auto document = plugin_document(buffer_);
+        document.indent_width = settings_.indent_width;
+        document.indent_spaces = settings_.use_spaces();
+        TuiPluginDialogs dialogs("Plugin: " + command.label);
+        plugin_running_ = true;
+        auto result = plugins::run(source, "@" + command.path.filename().u8string(), document, dialogs);
+        plugin_running_ = false;
+        if (!source.empty()) txx_secure_zero(source.data(), source.size());
+        if (result.status == plugins::Status::Success) {
+            if (apply_plugin_document(buffer_, result.document)) dirty_ = true;
+            set_status("Plugin completed: " + command.label);
+        } else if (result.status == plugins::Status::Error) plugin_message(result.error);
+        else set_status("Plugin cancelled: " + command.label);
     }
 
     // ---- Commands ----------------------------------------------------------
@@ -1416,8 +1699,8 @@ private:
                 ? std::filesystem::current_path()
                 : std::filesystem::path(filepath_).parent_path();
             picker_mode_ = PickerMode::Open;
-            picker_load(start);
-            picker_open_ = true;
+            save_focus_ = FOCUS_LIST;
+            picker_open_ = picker_load(start);
         });
     }
 
@@ -1511,8 +1794,7 @@ private:
         save_name_   = base_name(filepath_);
         save_cursor_ = save_name_.size();
         save_focus_  = FOCUS_NAME;
-        picker_load(start);
-        picker_open_ = true;
+        picker_open_ = picker_load(start);
     }
 
     // Write to filepath_. The .txx extension decides encrypted vs plain.
@@ -1581,13 +1863,18 @@ private:
                         edit([&]{ buffer_.insert_text(clipboard_); }); }
     void cmd_find()   { show_prompt("Find", false, last_find_, [this](bool ok, std::string q){
                             if (!ok || q.empty()) return;
-                            last_find_ = q; find_next(q); }); }
+                            last_find_ = q; find_match(q, false, false); }); }
     void cmd_goto()   { show_prompt("Go to Line", false, "", [this](bool ok, std::string v){
                             if (!ok) return;
                             try { buffer_.goto_line(std::stoi(v)); } catch (...){} }); }
-    void cmd_about()  { show_alert("About",
-                            "etui \xe2\x80\x94 encryptEd terminal editor. "
-                            "F9 or Alt+letter to open a menu."); }
+    void cmd_about() {
+        TuiPluginDialogs dialogs("About etui");
+        plugins::DialogRequest request{};
+        request.kind = plugins::DialogKind::Message;
+        request.prompt = about_text("etui - EncryptEd terminal editor",
+            "FTXUI " ENCRYPTED_FTXUI_VERSION " - MIT (terminal UI)");
+        dialogs.show(request);
+    }
 
     void cmd_column_wrap() {
         show_prompt("Wrap Width", false, "80", [this](bool ok, std::string v){
@@ -1598,23 +1885,108 @@ private:
         });
     }
 
-    void find_next(const std::string &q) {
-        std::string hay = buffer_.text();
-        Position c = buffer_.cursor();
-        std::size_t off = 0;
-        for (int l = 0; l < c.line; ++l) off += buffer_.line(l).size() + 1;
-        off += byte_at(buffer_.line(c.line), c.col);
-        std::size_t found = hay.find(q, off + 1);
-        if (found == std::string::npos) found = hay.find(q);
-        if (found == std::string::npos) { set_status("Not found: " + q); return; }
-        int line = 0; std::size_t run = 0;
-        while (line < buffer_.line_count() &&
-               run + buffer_.line(line).size() + 1 <= found) {
-            run += buffer_.line(line).size() + 1; ++line;
+    bool find_match(const std::string &query, bool previous, bool advance) {
+        if (query.empty()) { set_status("Enter search text"); return false; }
+        const std::string document = buffer_.text();
+        std::size_t offset = buffer_.byte_position(buffer_.cursor());
+        if (advance && buffer_.has_selection() && buffer_.selected_text() == query)
+            offset = buffer_.byte_position(previous ? buffer_.selection_start() : buffer_.selection_end());
+        else if (advance && !previous && offset < document.size())
+            ++offset;
+        std::size_t found = std::string::npos;
+        bool wrapped = false;
+        if (previous) {
+            if (offset > 0) found = document.rfind(query, offset - 1);
+            if (found == std::string::npos) { found = document.rfind(query); wrapped = true; }
+        } else {
+            found = document.find(query, offset);
+            if (found == std::string::npos) { found = document.find(query); wrapped = true; }
         }
-        buffer_.set_cursor(Position{line, col_at(buffer_.line(line), found - run)});
-        buffer_.clear_selection();
-        set_status("Found: " + q);
+        if (found == std::string::npos) {
+            buffer_.clear_selection();
+            set_status("Not found: " + query);
+            return false;
+        }
+        const Position first = buffer_.position_from_byte(found);
+        buffer_.set_cursor(first);
+        buffer_.set_selection(first, buffer_.position_from_byte(found + query.size()));
+        set_status("Found: " + query + (wrapped ? " (wrapped)" : ""));
+        return true;
+    }
+
+    void repeat_find(bool previous) {
+        if (last_find_.empty()) { cmd_find(); return; }
+        find_match(last_find_, previous, true);
+    }
+
+    void replace_match() {
+        if (last_find_.empty()) { set_status("Enter search text"); return; }
+        if (!buffer_.has_selection() || buffer_.selected_text() != last_find_) {
+            find_match(last_find_, false, false);
+            return; // First select a matching occurrence; never replace unrelated text.
+        }
+        if (last_find_ != last_replace_) {
+            if (last_replace_.empty()) buffer_.delete_selection();
+            else buffer_.insert_text(last_replace_);
+            dirty_ = true;
+        }
+        // insert_text leaves the cursor after the replacement. Include that
+        // position so adjacent occurrences are not skipped.
+        find_match(last_find_, false, last_find_ == last_replace_);
+    }
+
+    void replace_all_matches() {
+        if (last_find_.empty()) { set_status("Enter search text"); return; }
+        const std::string document = buffer_.text();
+        std::string result;
+        std::size_t position = 0, count = 0;
+        while (true) {
+            const auto found = document.find(last_find_, position);
+            if (found == std::string::npos) { result.append(document, position, std::string::npos); break; }
+            result.append(document, position, found - position);
+            result += last_replace_;
+            position = found + last_find_.size();
+            ++count;
+        }
+        if (!count) { set_status("Not found: " + last_find_); return; }
+        const auto cursor = buffer_.byte_position(buffer_.cursor());
+        if (buffer_.replace_text(result)) {
+            dirty_ = true;
+            buffer_.set_cursor(buffer_.position_from_byte(std::min(cursor, result.size())));
+            buffer_.clear_selection();
+            set_status("Replaced " + std::to_string(count) + " occurrences");
+        } else set_status("No text changes");
+    }
+
+    void cmd_replace() {
+        search_panel_open_ = true;
+        auto next_action = [this] {
+            find_match(last_find_, false, buffer_.has_selection() && buffer_.selected_text() == last_find_);
+        };
+        auto input_options = InputOption::Default();
+        input_options.multiline = false;
+        input_options.on_enter = next_action;
+        auto query = Input(&last_find_, "Search text", input_options);
+        auto replacement = Input(&last_replace_, "Replacement (empty deletes)", input_options);
+        auto next = Button("Find Next", next_action, ButtonOption::Simple());
+        auto previous = Button("Find Previous", [this]{ find_match(last_find_, true, true); }, ButtonOption::Simple());
+        auto replace = Button("Replace", [this]{ replace_match(); }, ButtonOption::Simple());
+        auto all = Button("Replace All", [this]{ replace_all_matches(); }, ButtonOption::Simple());
+        auto close = Button("Close", [this]{ search_panel_open_ = false; }, ButtonOption::Simple());
+        auto navigation = Container::Horizontal({next, previous});
+        auto actions = Container::Horizontal({replace, all, close});
+        auto container = Container::Vertical({query, replacement, navigation, actions});
+        query->TakeFocus();
+        search_panel_ = Renderer(container, [this, query, replacement, navigation, actions] {
+            return window(text(" Find / Replace "), vbox({
+                hbox({text("Find:         "), query->Render() | flex}),
+                hbox({text("Replace with: "), replacement->Render() | flex}),
+                separator(), navigation->Render(), actions->Render(), separator(),
+                paragraph(status_msg_) | size(HEIGHT, LESS_THAN, 2),
+                text("Case-sensitive literal search; searches wrap"),
+                text("F3: next  F2: previous  Tab: controls  Esc: close") | dim
+            })) | clear_under | size(WIDTH, LESS_THAN, std::min(76, Terminal::Size().dimx - 2)) | center;
+        });
     }
 
     void confirm_discard(std::function<void()> action) {
@@ -1630,7 +2002,7 @@ private:
         int cl = buffer_.cursor().line;
         if (cl < scroll_top_) scroll_top_ = cl;
         if (cl >= scroll_top_ + rows) scroll_top_ = cl - rows + 1;
-        if (scroll_top_ < 0) scroll_top_ = 0;
+        scroll_top_ = std::clamp(scroll_top_, 0, std::max(0, buffer_.line_count() - rows));
     }
 
     bool code_state(int idx) const {
@@ -1672,12 +2044,18 @@ private:
     // ---- State -------------------------------------------------------------
     ScreenInteractive *screen_;
     EditBuffer         buffer_;
+    bool plugin_running_ = false;
+    plugins::Catalog plugin_catalog_;
+    std::filesystem::path plugin_root_ = plugins::user_directory();
     AppSettings        settings_;
     std::string        filepath_;
     std::string        password_;
     std::string        pending_open_;
     std::string        clipboard_;
     std::string        last_find_;
+    std::string        last_replace_;
+    bool search_panel_open_ = false;
+    Component search_panel_;
     std::string        status_msg_;
     bool               dirty_      = false;
     bool               mouse_down_ = false;
@@ -1691,13 +2069,15 @@ private:
     std::string dialog_body_;
     bool        dialog_mask_  = false;
     std::string dialog_input_;
+    std::size_t dialog_cursor_ = 0;
+    mutable Box dialog_input_box_{};
     std::function<void(bool, std::string)> dialog_cb_;
     mutable Box dialog_btn0_box_{};
     mutable Box dialog_btn1_box_{};
 
     // ---- File picker state -------------------------------------------------
     enum class PickerMode { Open, Save };
-    enum { FOCUS_LIST = 0, FOCUS_NAME = 1, FOCUS_ENC = 2 };  // save-mode focus
+    enum { FOCUS_LIST = 0, FOCUS_NAME = 1, FOCUS_ENC = 2, FOCUS_PARENT = 3, FOCUS_ACTION = 4, FOCUS_CANCEL = 5 };  // save-mode focus
     struct PickerEntry { std::string name; bool is_dir; };  // ".." has is_dir=true
     bool                     picker_open_       = false;
     PickerMode               picker_mode_       = PickerMode::Open;
@@ -1712,6 +2092,9 @@ private:
     mutable std::vector<Box> picker_row_boxes_;         // one per visible row (reflect slots)
     mutable Box              picker_name_box_{};
     mutable Box              picker_enc_box_{};
+    mutable Box              picker_parent_box_{};
+    mutable Box              picker_action_box_{};
+    mutable Box              picker_cancel_box_{};
 };
 
 int main(int argc, char **argv) {
@@ -1723,6 +2106,8 @@ int main(int argc, char **argv) {
     if (restore) {
         struct termios t = original;
         t.c_iflag &= ~(IXON | IXOFF);
+        // Ctrl+C and Ctrl+Z are editor commands, not terminal signals.
+        t.c_lflag &= ~ISIG;
         tcsetattr(STDIN_FILENO, TCSANOW, &t);
     }
 #endif

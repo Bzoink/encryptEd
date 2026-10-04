@@ -69,6 +69,17 @@ struct Catalog {
 };
 
 std::filesystem::path user_directory();
+struct InstallResult {
+    std::size_t installed = 0;
+    std::vector<std::string> skipped;
+    std::vector<std::string> errors;
+};
+std::filesystem::path default_directory(const std::filesystem::path &executable,
+                                        const std::filesystem::path &installed = {});
+std::filesystem::path executable_path();
+InstallResult install_defaults(const std::filesystem::path &source,
+                               const std::filesystem::path &destination);
+
 Catalog discover(const std::filesystem::path &root);
 // Reject symlinks (including parent directories), traversal, and oversized files.
 bool read_script(const std::filesystem::path &root, const Command &command,

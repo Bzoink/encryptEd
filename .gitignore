@@ -7,9 +7,7 @@ texts/
 # Vendored third-party dependencies, obtained separately at build time
 # (unmodified upstream code — not redistributed in this repo).
 # See CLAUDE.md for what CMake expects at each path.
-lib/monocypher/
-lib/fltk/1_4/
-lib/fltk/1_5/
+external/
 
 # In-source CMake build artifacts
 CMakeFiles/
@@ -26,6 +24,7 @@ compile_commands.json
 Testing/
 install_manifest.txt
 CLAUDE.md
+AGENTS.md
 
 # In-source generated binaries and libraries
 encryptEd

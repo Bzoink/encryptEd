@@ -1,4 +1,4 @@
-// EncryptEd — FLTK 1.4 MVP editor
+// EncryptEd — FLTK 1.5 editor
 // C++17; all text is UTF-8; files saved as .txx (XChaCha20-Poly1305 + Argon2id)
 
 #include <FL/Fl.H>
@@ -56,6 +56,8 @@ extern "C" {
 #include "platform/secure_mem.h"
 }
 
+#include "app/about.h"
+#include "app/size_format.h"
 #include "gui/text_transform.h"
 #include "gui/md_highlight.h"
 #include "gui/plugin_buffer.h"
@@ -452,7 +454,7 @@ static bool ask_password_new(const char *title, std::string &out)
 
 static void show_about_dialog()
 {
-    Fl_Window *dlg = new Fl_Window(430, 270, "About EncryptEd");
+    Fl_Window *dlg = new Fl_Window(560, 450, "About EncryptEd");
     dlg->set_modal();
     apply_app_icon(*dlg);
 
@@ -469,21 +471,17 @@ static void show_about_dialog()
     subtitle->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
     subtitle->labelsize(13);
 
-    std::string body_text = "Version ";
-    body_text += ENCRYPTED_APP_VERSION;
-    body_text += "\nAuthor: ";
-    body_text += ENCRYPTED_APP_AUTHOR;
-    body_text += "\n\nCompression: DEFLATE (microz)\n"
-                 "Encryption: XChaCha20-Poly1305\n"
-                 "KDF: Argon2id\n"
-                 "Powered by Monocypher 4.0.2";
+    std::string fltk_version = std::to_string(FL_MAJOR_VERSION) + "." +
+        std::to_string(FL_MINOR_VERSION) + "." + std::to_string(FL_PATCH_VERSION);
+    std::string body_text = about_text("EncryptEd - encrypted UTF-8 text editor",
+        "FLTK " + fltk_version + " - LGPL with exceptions (GUI)");
 
-    Fl_Box *body = new Fl_Box(24, 108, 382, 108, nullptr);
+    Fl_Box *body = new Fl_Box(24, 108, 512, 292, nullptr);
     body->copy_label(body_text.c_str());
     body->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
     body->labelsize(12);
 
-    Fl_Return_Button *ok = new Fl_Return_Button(326, 226, 80, 28, "OK");
+    Fl_Return_Button *ok = new Fl_Return_Button(456, 410, 80, 28, "OK");
     dlg->end();
 
     ok->callback([](Fl_Widget *w, void *) { w->window()->hide(); });
@@ -543,13 +541,15 @@ struct AppSettings {
 
     enum StatusCount {
         STATUS_COUNT_CHARS = 0,
-        STATUS_COUNT_BYTES = 1,
+        STATUS_COUNT_SIZE = 1, // Preserve the existing File size preference.
+        STATUS_COUNT_BYTES = 2,
     };
 
     Fl_Font     font               = FL_COURIER;
     Fl_Fontsize size               = 14;
     bool        dark_mode          = false;
     bool        markdown_highlight = true;
+    bool        vertical_scrollbar = true;
     IndentMode  indent_mode        = INDENT_TABS;
     int         indent_width       = 4;
     StatusCount status_count       = STATUS_COUNT_CHARS;
@@ -665,31 +665,42 @@ class FindReplaceWindow : public Fl_Window {
     static void repl_all_cb(Fl_Widget *, void *v) { static_cast<FindReplaceWindow *>(v)->do_replace_all(); }
     static void close_cb(Fl_Widget *, void *v)    { static_cast<Fl_Window *>(v)->hide(); }
 
-    void do_find()
+    void do_find(bool previous = false)
     {
         if (!buf_ || find_inp_->size() == 0) return;
         int start = editor_ ? editor_->insert_position() : 0;
         if (buf_->selected()) {
-            int s, e;
-            buf_->selection_position(&s, &e);
-            start = e;
+            int first, last;
+            buf_->selection_position(&first, &last);
+            start = previous ? first : last;
         }
         int found = 0;
-        if (buf_->search_forward(start, find_inp_->value(), &found, case_btn_->value())) {
+        bool matched;
+        if (previous) {
+            matched = start > 0 && buf_->search_backward(start - 1, find_inp_->value(), &found, case_btn_->value());
+            if (!matched) matched = buf_->search_backward(buf_->length(), find_inp_->value(), &found, case_btn_->value());
+        } else {
+            matched = buf_->search_forward(start, find_inp_->value(), &found, case_btn_->value());
+            if (!matched) matched = buf_->search_forward(0, find_inp_->value(), &found, case_btn_->value());
+        }
+        if (matched) {
             buf_->select(found, found + static_cast<int>(strlen(find_inp_->value())));
             if (editor_) {
                 editor_->insert_position(found);
                 editor_->show_insert_position();
             }
-        } else {
-            fl_beep();
-        }
+        } else fl_beep();
     }
 
     void do_replace()
     {
         if (!buf_ || find_inp_->size() == 0) return;
-        if (!buf_->selected()) { do_find(); return; }
+        int first = 0, last = 0, found = 0;
+        if (!buf_->selected() || !buf_->selection_position(&first, &last) ||
+            last - first != find_inp_->size() ||
+            !buf_->search_forward(first, find_inp_->value(), &found, case_btn_->value()) || found != first) {
+            do_find(); return;
+        }
         buf_->replace_selection(repl_inp_->value());
         do_find();
     }
@@ -750,6 +761,20 @@ public:
         show();
         find_inp_->take_focus();
     }
+
+    void find_again(bool previous) {
+        if (find_inp_->size() == 0) { show_find(); return; }
+        do_find(previous);
+    }
+
+    int handle(int event) override {
+        if ((event == FL_KEYDOWN || event == FL_SHORTCUT) &&
+            (Fl::event_key() == FL_F + 2 || Fl::event_key() == FL_F + 3)) {
+            find_again(Fl::event_key() == FL_F + 2);
+            return 1;
+        }
+        return Fl_Window::handle(event);
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -764,6 +789,7 @@ class PrefsDialog : public Fl_Window {
     Fl_Spinner      *indent_width_spin_;
     Fl_Check_Button *dark_btn_;
     Fl_Check_Button *md_btn_;
+    Fl_Check_Button *scrollbar_btn_;
     Fl_Choice       *status_count_choice_;
     AppSettings      result_;
     bool             accepted_ = false;
@@ -793,9 +819,12 @@ class PrefsDialog : public Fl_Window {
         d->result_.indent_width = clamp_indent_width(static_cast<int>(d->indent_width_spin_->value()));
         d->result_.dark_mode          = d->dark_btn_->value() != 0;
         d->result_.markdown_highlight = d->md_btn_->value() != 0;
+        d->result_.vertical_scrollbar = d->scrollbar_btn_->value() != 0;
         d->result_.status_count = d->status_count_choice_->value() == 1
                                 ? AppSettings::STATUS_COUNT_BYTES
-                                : AppSettings::STATUS_COUNT_CHARS;
+                                : d->status_count_choice_->value() == 2
+                                    ? AppSettings::STATUS_COUNT_SIZE
+                                    : AppSettings::STATUS_COUNT_CHARS;
         d->accepted_            = true;
         w->window()->hide();
     }
@@ -807,7 +836,7 @@ class PrefsDialog : public Fl_Window {
 
 public:
     explicit PrefsDialog(const AppSettings &current)
-        : Fl_Window(310, 331, "Preferences"), result_(current)
+        : Fl_Window(310, 367, "Preferences"), result_(current)
     {
         set_modal();
 
@@ -887,12 +916,17 @@ public:
         scl->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
         status_count_choice_ = new Fl_Choice(108, 230, 190, 24);
         status_count_choice_->add("Character count");
-        status_count_choice_->add("File size");
-        status_count_choice_->value(current.status_count == AppSettings::STATUS_COUNT_BYTES ? 1 : 0);
+        status_count_choice_->add("Byte count");
+        status_count_choice_->add("Readable size");
+        status_count_choice_->value(current.status_count == AppSettings::STATUS_COUNT_BYTES ? 1
+                                    : current.status_count == AppSettings::STATUS_COUNT_SIZE ? 2 : 0);
+
+        scrollbar_btn_ = new Fl_Check_Button(108, 266, 190, 24, "Vertical scrollbar");
+        scrollbar_btn_->value(current.vertical_scrollbar ? 1 : 0);
 
         // Buttons
-        Fl_Return_Button *ok  = new Fl_Return_Button(118, 291, 80, 28, "OK");
-        Fl_Button        *can = new Fl_Button(208, 291, 80, 28, "Cancel");
+        Fl_Return_Button *ok  = new Fl_Return_Button(118, 327, 80, 28, "OK");
+        Fl_Button        *can = new Fl_Button(208, 327, 80, 28, "Cancel");
         ok->callback(ok_cb,     this);
         can->callback(cancel_cb, this);
 
@@ -1094,6 +1128,22 @@ public:
 #ifdef __APPLE__
         add_key_binding('z', FL_META | FL_SHIFT, EditorTextBuffer::redo_key);
 #endif
+    }
+
+    void resize(int x, int y, int w, int h) override
+    {
+        if (scrollbar_align() & (FL_ALIGN_LEFT | FL_ALIGN_RIGHT)) {
+            Fl_Text_Editor::resize(x, y, w, h);
+            return;
+        }
+        // FLTK's wrap-at-bounds optimization can force the vertical bar on
+        // despite scrollbar_align(). Lay out this widget without a gutter,
+        // then restore the global size before any other widget is laid out.
+        const int global_size = Fl::scrollbar_size();
+        Fl::scrollbar_size(0);
+        Fl_Text_Editor::resize(x, y, w, h);
+        mVScrollBar->hide();
+        Fl::scrollbar_size(global_size);
     }
 
     void set_indent_behavior(AppSettings::IndentMode indent_mode, int indent_width)
@@ -1439,6 +1489,9 @@ class EncryptEdWindow : public Fl_Double_Window {
         plugin_catalog_ = plugins::discover(plugin_root_);
         plugin_menu_.clear(); plugin_labels_.clear(); plugin_bindings_.clear();
         plugin_bindings_.reserve(plugin_catalog_.commands.size());
+        append_plugin_item("Install Default Plugins", [](Fl_Widget *, void *v) {
+            static_cast<EncryptEdWindow *>(v)->install_default_plugins();
+        }, this);
         append_plugin_item("Reload Plugins", [](Fl_Widget *, void *v) {
             static_cast<EncryptEdWindow *>(v)->reload_plugins(true);
         }, this);
@@ -1491,6 +1544,19 @@ class EncryptEdWindow : public Fl_Double_Window {
             errors += error;
         }
         fl_alert("%s", errors.c_str());
+    }
+
+    void install_default_plugins()
+    {
+        if (plugin_running_) return;
+        auto source = plugins::default_directory(plugins::executable_path());
+        auto result = plugins::install_defaults(source, plugin_root_);
+        reload_plugins(false);
+        std::string summary = "Installed " + std::to_string(result.installed) +
+            " plugins; kept " + std::to_string(result.skipped.size()) + " existing files.";
+        for (const auto &path : result.skipped) summary += "\nKept: " + path;
+        for (const auto &error : result.errors) summary += "\n" + error;
+        fl_message("%s", summary.c_str());
     }
 
     void open_plugins_folder()
@@ -1586,13 +1652,16 @@ class EncryptEdWindow : public Fl_Double_Window {
 
         int status_count = static_cast<int>(AppSettings::STATUS_COUNT_CHARS);
         prefs_.get("status_count", status_count, status_count);
-        settings_.status_count = status_count == static_cast<int>(AppSettings::STATUS_COUNT_BYTES)
-                               ? AppSettings::STATUS_COUNT_BYTES
+        settings_.status_count = status_count >= 0 && status_count <= 2
+                               ? static_cast<AppSettings::StatusCount>(status_count)
                                : AppSettings::STATUS_COUNT_CHARS;
 
         int md_hl = 1;
         prefs_.get("markdown_highlight", md_hl, md_hl);
         settings_.markdown_highlight = (md_hl != 0);
+        int scrollbar = 1;
+        prefs_.get("vertical_scrollbar", scrollbar, 1);
+        settings_.vertical_scrollbar = scrollbar != 0;
     }
 
     void save_settings()
@@ -1605,10 +1674,13 @@ class EncryptEdWindow : public Fl_Double_Window {
         prefs_.set("indent_width", settings_.indent_width);
         prefs_.set("status_count", static_cast<int>(settings_.status_count));
         prefs_.set("markdown_highlight", settings_.markdown_highlight ? 1 : 0);
+        prefs_.set("vertical_scrollbar", settings_.vertical_scrollbar ? 1 : 0);
     }
 
     void apply_settings()
     {
+        editor_->scrollbar_align(settings_.vertical_scrollbar ? FL_ALIGN_BOTTOM_RIGHT : FL_ALIGN_BOTTOM);
+        editor_->resize(editor_->x(), editor_->y(), editor_->w(), editor_->h());
         editor_->textfont(settings_.font);
         editor_->textsize(settings_.size);
         editor_->set_indent_behavior(settings_.indent_mode, settings_.indent_width);
@@ -1718,19 +1790,10 @@ class EncryptEdWindow : public Fl_Double_Window {
     std::string format_status_counter() const
     {
         char out[64];
-        if (settings_.status_count == AppSettings::STATUS_COUNT_BYTES) {
-            // File size in B / KB / MB / GB using 1024 units.
-            double bytes = static_cast<double>(buf_ ? buf_->length() : 0);
-            static const char *units[] = { "B", "KB", "MB", "GB", "TB" };
-            int u = 0;
-            double v = bytes;
-            while (v >= 1024.0 && u < 4) { v /= 1024.0; ++u; }
-            if (u == 0) {
-                std::snprintf(out, sizeof(out), "%d %s",
-                              static_cast<int>(bytes), units[u]);
-            } else {
-                std::snprintf(out, sizeof(out), "%.2f %s", v, units[u]);
-            }
+        if (settings_.status_count == AppSettings::STATUS_COUNT_SIZE) {
+            return human_readable_size(buf_ ? static_cast<std::size_t>(buf_->length()) : 0);
+        } else if (settings_.status_count == AppSettings::STATUS_COUNT_BYTES) {
+            return std::to_string(buf_ ? buf_->length() : 0) + " bytes";
         } else {
             int chars = count_buffer_codepoints();
             if (chars >= 10000) {
@@ -2686,6 +2749,9 @@ class EncryptEdWindow : public Fl_Double_Window {
         else if (!strcmp(lbl, "Paste"))       Fl_Text_Editor::kf_paste(0,      win->editor_);
         else if (!strcmp(lbl, "Select All"))  Fl_Text_Editor::kf_select_all(0, win->editor_);
         else if (!strcmp(lbl, "Find"))        win->do_show_find();
+        else if (!strcmp(lbl, "Find Next"))   win->fr_win_->find_again(false);
+        else if (!strcmp(lbl, "Find Previous")) win->fr_win_->find_again(true);
+        else if (!strcmp(lbl, "Find and Replace")) win->do_show_find();
         else if (!strcmp(lbl, "Go to Line...")) win->do_go_to_line();
         else if (!strcmp(lbl, "Convert Tabs to Spaces"))       win->do_convert_tabs_to_spaces();
         else if (!strcmp(lbl, "Convert Leading Spaces to Tabs")) win->do_convert_leading_spaces_to_tabs();
@@ -2755,6 +2821,9 @@ public:
         menu_->add("Edit/Paste",      FL_CTRL + 'v', menu_cb, this);
         menu_->add("Edit/Select All", FL_CTRL + 'a', menu_cb, this, FL_MENU_DIVIDER);
         menu_->add("Edit/Find",        FL_CTRL + 'f', menu_cb, this);
+        menu_->add("Edit/Find Next", FL_F + 3, menu_cb, this);
+        menu_->add("Edit/Find Previous", FL_F + 2, menu_cb, this);
+        menu_->add("Edit/Find and Replace", FL_CTRL + 'r', menu_cb, this);
         menu_->add("Edit/Go to Line...", FL_CTRL + 'g', menu_cb, this);
         menu_->add("Edit/Text/Convert Tabs to Spaces",         0, menu_cb, this);
         menu_->add("Edit/Text/Convert Leading Spaces to Tabs", 0, menu_cb, this);

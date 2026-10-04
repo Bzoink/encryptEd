@@ -1,6 +1,17 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(encryptEd VERSION 1.1 LANGUAGES C CXX)
+project(encryptEd VERSION 1.2 LANGUAGES C CXX)
+
+# Prefer -O2 over CMake's default -O3 for GCC/Clang Release builds, including
+# libraries built from source. Keep the other Release flags (e.g. -DNDEBUG).
+foreach(language C CXX)
+    if(CMAKE_${language}_COMPILER_ID MATCHES "GNU|Clang")
+        string(REPLACE "-O3" "-O2" release_flags "${CMAKE_${language}_FLAGS_RELEASE}")
+        set(CMAKE_${language}_FLAGS_RELEASE "${release_flags}" CACHE STRING
+            "Flags used by the ${language} compiler during Release builds" FORCE)
+    endif()
+endforeach()
+unset(release_flags)
 
 include(GNUInstallDirs)
 
@@ -42,6 +53,8 @@ function(encrypted_apply_app_metadata target)
     target_compile_definitions(${target} PRIVATE
         ENCRYPTED_APP_AUTHOR="${ENCRYPTED_APP_AUTHOR}"
         ENCRYPTED_APP_VERSION="${ENCRYPTED_APP_VERSION}"
+        ENCRYPTED_LUA_VERSION="${ENCRYPTED_LUA_VERSION}"
+        ENCRYPTED_MONOCYPHER_VERSION="${ENCRYPTED_MONOCYPHER_VERSION}"
     )
 endfunction()
 
@@ -79,16 +92,16 @@ target_include_directories(microz PUBLIC
 )
 
 encrypted_require_vendored_path(
-    "${CMAKE_CURRENT_SOURCE_DIR}/lib/monocypher/monocypher.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/external/monocypher/monocypher.c"
     "Monocypher"
-    "  Download Monocypher 4.0.2 from https://monocypher.org/download/ and copy\n    monocypher.c and monocypher.h into lib/monocypher/."
+    "  Download Monocypher 4.0.2 from https://monocypher.org/download/ and copy\n    monocypher.c and monocypher.h into external/monocypher/."
 )
 
 add_library(monocypher STATIC
-    lib/monocypher/monocypher.c
+    external/monocypher/monocypher.c
 )
 target_include_directories(monocypher PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/lib/monocypher
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/monocypher
 )
 
 add_library(encrypted_core STATIC
@@ -144,10 +157,30 @@ if(NOT MSVC)
     target_compile_options(encrypted_lua PRIVATE -Wno-format-nonliteral)
 endif()
 
-add_library(encrypted_plugins STATIC src/plugins/runtime.cpp src/plugins/catalog.cpp)
+# About dialogs report dependency versions from their source metadata.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/lib/lua/src/lua.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/external/monocypher/monocypher.h")
+file(STRINGS lib/lua/src/lua.h _lua_version_lines
+    REGEX "^#define LUA_VERSION_(MAJOR|MINOR|RELEASE)[ \t]+\"[0-9]+\"")
+foreach(_line IN LISTS _lua_version_lines)
+    if(_line MATCHES "LUA_VERSION_(MAJOR|MINOR|RELEASE)[ \t]+\"([0-9]+)\"")
+        set(_lua_${CMAKE_MATCH_1} "${CMAKE_MATCH_2}")
+    endif()
+endforeach()
+set(ENCRYPTED_LUA_VERSION "${_lua_MAJOR}.${_lua_MINOR}.${_lua_RELEASE}")
+file(STRINGS external/monocypher/monocypher.h _monocypher_version_line
+    LIMIT_COUNT 1 REGEX "^// Monocypher version ")
+string(REGEX REPLACE "^// Monocypher version " "" ENCRYPTED_MONOCYPHER_VERSION
+    "${_monocypher_version_line}")
+
+add_library(encrypted_plugins STATIC src/plugins/runtime.cpp src/plugins/catalog.cpp src/plugins/install.cpp)
 target_include_directories(encrypted_plugins PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(encrypted_plugins PRIVATE encrypted_lua PUBLIC encrypted_core)
 encrypted_apply_hardening(encrypted_plugins)
+target_compile_definitions(encrypted_plugins PRIVATE
+    ENCRYPTED_DEFAULT_PLUGIN_DIR="${CMAKE_INSTALL_FULL_DATAROOTDIR}/encryptEd/default-plugins"
+)
 
 add_executable(encrypted_cli
     src/tools/encrypted_cli.c
@@ -162,19 +195,19 @@ install(TARGETS encrypted_cli
 
 # GUI executable — requires FLTK (detected via fltk-config)
 set(ENCRYPTED_FLTK_VERSION "1_5" CACHE STRING
-    "Vendored FLTK version to use (1_4 or 1_5)")
+    "FLTK version directory (this project requires FLTK 1.5)")
 
 if(WIN32 AND CMAKE_CROSSCOMPILING)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         set(ENCRYPTED_FLTK_PREFIX
-            "${CMAKE_CURRENT_SOURCE_DIR}/lib/fltk/${ENCRYPTED_FLTK_VERSION}/fltk-win64")
+            "${CMAKE_CURRENT_SOURCE_DIR}/external/fltk/${ENCRYPTED_FLTK_VERSION}/fltk-win64")
     else()
         set(ENCRYPTED_FLTK_PREFIX
-            "${CMAKE_CURRENT_SOURCE_DIR}/lib/fltk/${ENCRYPTED_FLTK_VERSION}/fltk-win32")
+            "${CMAKE_CURRENT_SOURCE_DIR}/external/fltk/${ENCRYPTED_FLTK_VERSION}/fltk-win32")
     endif()
 
     if(EXISTS "${ENCRYPTED_FLTK_PREFIX}/CMake/FLTKConfig.cmake")
-        find_package(FLTK CONFIG REQUIRED
+        find_package(FLTK 1.5 CONFIG REQUIRED
             PATHS
                 "${ENCRYPTED_FLTK_PREFIX}"
                 "${ENCRYPTED_FLTK_PREFIX}/CMake"
@@ -226,19 +259,37 @@ if(WIN32 AND CMAKE_CROSSCOMPILING)
     endif()
 else()
 # Prefer vendored FLTK CMake config (FLTK 1.5+) if present; fall back to fltk-config.
+if(APPLE)
+    set(_fltk_platform fltk-macos)
+else()
+    set(_fltk_platform fltk-linux)
+endif()
 set(_fltk_vendored_prefix
-    "${CMAKE_CURRENT_SOURCE_DIR}/lib/fltk/${ENCRYPTED_FLTK_VERSION}/fltk-linux")
+    "${CMAKE_CURRENT_SOURCE_DIR}/external/fltk/${ENCRYPTED_FLTK_VERSION}/${_fltk_platform}")
 if(EXISTS "${_fltk_vendored_prefix}/share/fltk/FLTKConfig.cmake")
-    find_package(FLTK CONFIG REQUIRED
+    find_package(FLTK 1.5 CONFIG REQUIRED
         PATHS "${_fltk_vendored_prefix}"
         NO_DEFAULT_PATH
     )
 endif()
 unset(_fltk_vendored_prefix)
+# Honor explicit installation prefixes (for example a macOS/Homebrew build).
+if(NOT TARGET fltk::fltk AND CMAKE_PREFIX_PATH)
+    find_package(FLTK 1.5 CONFIG QUIET)
+endif()
 
 if(NOT TARGET fltk::fltk)
     # No vendored CMake config — use fltk-config from PATH (system shared library).
     find_program(FLTK_CONFIG fltk-config)
+    if(FLTK_CONFIG)
+        execute_process(COMMAND ${FLTK_CONFIG} --version
+            OUTPUT_VARIABLE _fltk_version OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(_fltk_version VERSION_LESS "1.5")
+            message(STATUS "FLTK ${_fltk_version} is too old; FLTK 1.5 is required")
+            unset(FLTK_CONFIG CACHE)
+            unset(FLTK_CONFIG)
+        endif()
+    endif()
     if(FLTK_CONFIG)
         execute_process(
             COMMAND ${FLTK_CONFIG} --cxxflags
@@ -351,7 +402,7 @@ else()
         "fltk-config on PATH,\n"
         "  or build FLTK 1.5 from https://www.fltk.org/software.php as a "
         "static library and place it at:\n"
-        "    ${CMAKE_CURRENT_SOURCE_DIR}/lib/fltk/${ENCRYPTED_FLTK_VERSION}/fltk-linux/\n"
+        "    ${CMAKE_CURRENT_SOURCE_DIR}/external/fltk/${ENCRYPTED_FLTK_VERSION}/fltk-linux/\n"
         "  containing share/fltk/FLTKConfig.cmake "
         "(build with CMAKE_INSTALL_PREFIX set there)."
     )
@@ -386,14 +437,29 @@ if(ENCRYPTED_BUILD_TUI)
         set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
         set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
         set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        FetchContent_Declare(ftxui
-            GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
-            GIT_TAG v5.0.0
-        )
-        FetchContent_MakeAvailable(ftxui)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ftxui/CMakeLists.txt")
+            add_subdirectory(external/ftxui ${CMAKE_CURRENT_BINARY_DIR}/_deps/ftxui-build)
+        else()
+            FetchContent_Declare(ftxui
+                SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/ftxui"
+                GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
+                GIT_TAG v5.0.0
+            )
+            FetchContent_MakeAvailable(ftxui)
+        endif()
     endif()
 
     if(TARGET ftxui::component)
+        set(ENCRYPTED_FTXUI_VERSION "Unknown (system package)")
+        if(ftxui_FOUND AND ftxui_VERSION)
+            set(ENCRYPTED_FTXUI_VERSION "${ftxui_VERSION}")
+        elseif(NOT ftxui_FOUND)
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+                "${CMAKE_CURRENT_SOURCE_DIR}/external/ftxui/CMakeLists.txt")
+            file(STRINGS external/ftxui/CMakeLists.txt _ftxui_version_line
+                LIMIT_COUNT 1 REGEX "^[ \t]+VERSION [0-9]+\\.[0-9]+\\.[0-9]+")
+            string(REGEX REPLACE "^[ \t]+VERSION " "" ENCRYPTED_FTXUI_VERSION "${_ftxui_version_line}")
+        endif()
         add_executable(etui
             src/tui/main_tui.cpp
         )
@@ -402,11 +468,13 @@ if(ENCRYPTED_BUILD_TUI)
         target_link_libraries(etui PRIVATE
             etui_core
             encrypted_text_transform
+            encrypted_plugins
             ftxui::screen
             ftxui::dom
             ftxui::component
         )
         encrypted_apply_app_metadata(etui)
+        target_compile_definitions(etui PRIVATE ENCRYPTED_FTXUI_VERSION="${ENCRYPTED_FTXUI_VERSION}")
         encrypted_apply_hardening(etui)
         encrypted_make_windows_self_contained(etui -static-libstdc++)
 
@@ -443,7 +511,38 @@ encrypted_make_windows_self_contained(plugin_tests -static-libstdc++)
 encrypted_apply_hardening(plugin_tests)
 add_test(NAME plugin_tests COMMAND plugin_tests)
 
-install(DIRECTORY examples/plugins/ DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/encryptEd/plugin-examples
+add_executable(default_plugin_tests tests/default_plugin_tests.cpp)
+target_link_libraries(default_plugin_tests PRIVATE encrypted_plugins)
+target_compile_definitions(default_plugin_tests PRIVATE ENCRYPTED_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+encrypted_make_windows_self_contained(default_plugin_tests -static-libstdc++)
+encrypted_apply_hardening(default_plugin_tests)
+add_test(NAME default_plugin_tests COMMAND default_plugin_tests)
+
+
+# Keep development executables relocatable, including multi-config builds.
+file(GLOB_RECURSE ENCRYPTED_DEFAULT_PLUGIN_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/examples/plugins/*.lua")
+foreach(editor IN ITEMS encryptEd etui)
+    if(TARGET ${editor})
+        set_property(TARGET ${editor} APPEND PROPERTY LINK_DEPENDS ${ENCRYPTED_DEFAULT_PLUGIN_SOURCES})
+        add_custom_command(TARGET ${editor} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/examples/plugins"
+                "$<TARGET_FILE_DIR:${editor}>/default-plugins"
+            VERBATIM)
+    endif()
+endforeach()
+if(TARGET encryptEd)
+    if(APPLE)
+        add_custom_command(TARGET encryptEd POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/examples/plugins"
+                "$<TARGET_BUNDLE_DIR:encryptEd>/Contents/Resources/default-plugins"
+            VERBATIM)
+    endif()
+endif()
+
+install(DIRECTORY examples/plugins/ DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/encryptEd/default-plugins
     COMPONENT ${ENCRYPTED_INSTALL_COMPONENT_GUI})
 install(FILES docs/plugins.md DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/encryptEd
     COMPONENT ${ENCRYPTED_INSTALL_COMPONENT_GUI})
@@ -480,6 +579,29 @@ target_link_libraries(tui_edit_buffer_tests PRIVATE etui_core)
 encrypted_make_windows_self_contained(tui_edit_buffer_tests)
 encrypted_apply_hardening(tui_edit_buffer_tests)
 add_test(NAME tui_edit_buffer_tests COMMAND tui_edit_buffer_tests)
+
+add_executable(tui_plugin_tests tests/tui/plugin_tests.cpp)
+target_link_libraries(tui_plugin_tests PRIVATE etui_core encrypted_plugins)
+encrypted_make_windows_self_contained(tui_plugin_tests -static-libstdc++)
+encrypted_apply_hardening(tui_plugin_tests)
+add_test(NAME tui_plugin_tests COMMAND tui_plugin_tests)
+if(TARGET etui AND UNIX AND NOT CMAKE_CROSSCOMPILING)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME tui_plugin_smoke
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/plugin_smoke.py
+                $<TARGET_FILE:etui>)
+        set_tests_properties(tui_plugin_smoke PROPERTIES TIMEOUT 60)
+        add_test(NAME tui_mouse_smoke
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/mouse_smoke.py
+                $<TARGET_FILE:etui>)
+        set_tests_properties(tui_mouse_smoke PROPERTIES TIMEOUT 60)
+        add_test(NAME tui_search_smoke
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/search_smoke.py
+                $<TARGET_FILE:etui>)
+        set_tests_properties(tui_search_smoke PROPERTIES TIMEOUT 60)
+    endif()
+endif()
 
 set(CPACK_PACKAGE_NAME "encryptEd")
 set(CPACK_PACKAGE_VENDOR "${ENCRYPTED_APP_AUTHOR}")
@@ -539,6 +661,10 @@ if(WIN32)
                 list(APPEND ENCRYPTED_NSIS_INSTALL_CONFIG_ARGS --config "$<CONFIG>")
             endif()
 
+            set(ENCRYPTED_INSTALLER_TARGETS encryptEd)
+            if(TARGET etui)
+                list(APPEND ENCRYPTED_INSTALLER_TARGETS etui)
+            endif()
             add_custom_target(package_windows_installer
                 COMMAND ${CMAKE_COMMAND} -E rm -rf "${ENCRYPTED_NSIS_STAGE_DIR}"
                 COMMAND ${CMAKE_COMMAND} -E make_directory "${ENCRYPTED_NSIS_WORK_DIR}"
@@ -549,7 +675,7 @@ if(WIN32)
                 COMMAND "${ENCRYPTED_MAKENSIS_EXECUTABLE}" -V2 "${ENCRYPTED_NSIS_SCRIPT}"
                 BYPRODUCTS "${ENCRYPTED_NSIS_OUTPUT}"
                 COMMAND_EXPAND_LISTS
-                DEPENDS encryptEd
+                DEPENDS ${ENCRYPTED_INSTALLER_TARGETS}
                 VERBATIM
                 COMMENT "Staging ${ENCRYPTED_WINDOWS_DISPLAY_NAME} and building the NSIS installer"
             )

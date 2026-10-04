@@ -42,9 +42,10 @@ void config_load(AppSettings &s) {
         int n = 0;
         try { n = std::stoi(val); } catch (...) { continue; }
         if (key == "syn_highlight" || key == "markdown_highlight") s.syn_highlight = n != 0;
+        else if (key == "vertical_scrollbar") s.vertical_scrollbar = n != 0;
         else if (key == "indent_mode") s.indent_mode = n ? AppSettings::INDENT_SPACES : AppSettings::INDENT_TABS;
         else if (key == "indent_width") s.indent_width = (n < 2 ? 2 : (n > 8 ? 8 : n));
-        else if (key == "status_count") s.status_count = n ? AppSettings::STATUS_COUNT_BYTES : AppSettings::STATUS_COUNT_CHARS;
+        else if (key == "status_count") s.status_count = n >= 0 && n <= 2 ? static_cast<AppSettings::StatusCount>(n) : AppSettings::STATUS_COUNT_CHARS;
         else if (key == "newline_style") s.newline_style = static_cast<txx_newline_style>(n);
     }
 }
@@ -57,6 +58,7 @@ void config_save(const AppSettings &s) {
     std::ofstream out(path, std::ios::trunc);
     if (!out) return;
     out << "syn_highlight=" << (s.syn_highlight ? 1 : 0) << "\n"
+        << "vertical_scrollbar=" << (s.vertical_scrollbar ? 1 : 0) << "\n"
         << "indent_mode=" << static_cast<int>(s.indent_mode) << "\n"
         << "indent_width=" << s.indent_width << "\n"
         << "status_count=" << static_cast<int>(s.status_count) << "\n"

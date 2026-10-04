@@ -3,7 +3,8 @@
 
 #include <FL/Fl.H>
 #include <FL/Fl_Window.H>
-#include <FL/Fl_Box.H>
+#include <FL/Fl_Text_Display.H>
+#include <FL/Fl_Text_Buffer.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Hold_Browser.H>
 #include <FL/Fl_Return_Button.H>
@@ -20,8 +21,13 @@ public:
         plugins::DialogReply reply;
         Fl_Window dialog(500, 300, title_.c_str());
         dialog.set_modal();
-        Fl_Box prompt(15, 10, 470, 90, request.prompt.c_str());
-        prompt.align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP | FL_ALIGN_CLIP);
+        Fl_Text_Buffer prompt_buffer;
+        prompt_buffer.text(request.prompt.c_str());
+        Fl_Text_Display prompt(15, 10, 470, 90);
+        prompt.buffer(prompt_buffer);
+        prompt.textfont(FL_HELVETICA);
+        prompt.textsize(14);
+        prompt.wrap_mode(Fl_Text_Display::WRAP_AT_BOUNDS, 0);
         Fl_Input input(15, 110, 470, 30);
         input.maximum_size(65536);
         input.value(request.initial.c_str());

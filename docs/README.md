@@ -40,10 +40,10 @@ The codebase has two layers.
 
 | Library | Location | License | Use |
 |---|---|---|---|
-| FLTK 1.5 | `lib/fltk/1_5/` | FLTK (LGPL + exceptions) | GUI |
-| Monocypher 4.0.2 | `lib/monocypher/` | BSD 2-Clause / CC0 | Crypto and KDF |
+| FLTK 1.5 | `external/fltk/1_5/` | FLTK (LGPL + exceptions) | GUI |
+| Monocypher 4.0.2 | `external/monocypher/` | BSD 2-Clause / CC0 | Crypto and KDF |
 | microz | `lib/microz/` | MIT (miniz-derived) | DEFLATE compression |
-| FTXUI 5.0.0 | fetched via CMake `FetchContent` | MIT | Terminal UI (`etui`) |
+| FTXUI 5.0.0 | `external/ftxui/` (downloaded if missing) | MIT | Terminal UI (`etui`) |
 
 FLTK and Monocypher are pristine upstream code and are not committed to this repository —
 see the top-level `README.md` for how to obtain them.
@@ -130,10 +130,14 @@ Files can be dragged onto the editor window to open them. On Windows, Explorer d
 docs/
   README.md          — this document
   txx-format.md      — binary format specification
+external/             — downloaded compilation dependencies (gitignored)
+  fltk/1_5/          — FLTK 1.5 sources and platform installations
+  monocypher/        — crypto library
+  ftxui/             — terminal UI library
 lib/
-  fltk/              — vendored FLTK (Linux and Windows cross-compile builds)
-  microz/            — vendored DEFLATE library
-  monocypher/        — vendored crypto library
+  fltk/              — MinGW toolchain files
+  lua/               — committed Lua runtime sources
+  microz/            — modified DEFLATE library
 src/
   core/              — C17 core library
   gui/
@@ -206,13 +210,15 @@ Build verification should include:
 `etui` is a terminal front-end built on [FTXUI](https://github.com/ArthurSonzogni/FTXUI)
 (C++17, MIT), reaching feature parity with the FLTK GUI minus inherently graphical
 settings (font face/size). It reuses `encrypted_core`, `text_transform.cpp`, and `utf8.c`
-unchanged, ships in the same installer/bundle as the GUI, and lives under `src/tui/`:
+unchanged, shares the restricted Lua plugin runtime and user plugin folder, ships
+in the same installer/bundle as the GUI, and lives under `src/tui/`:
 
 | File | Responsibility |
 |---|---|
 | `main_tui.cpp` | App entry, `ScreenInteractive` loop, menu/command dispatch, dialogs, theming |
 | `edit_buffer.h/.cpp` | Document model: storage, cursor, selection, undo/redo — no FTXUI dependency |
 | `md_parse.h/.cpp`, `syn_parse.h/.cpp` | Markdown/syntax parsing, emitting styled runs for terminal rendering |
+| `plugin_buffer.h`, `plugin_dialog.h` | Lua document adapter and modal terminal dialogs |
 | `clipboard.h/.cpp` | OSC 52 + OS clipboard bridges |
 | `config.h/.cpp` | Load/save preferences |
 

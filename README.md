@@ -8,6 +8,9 @@ EncryptEd is a small encrypted text editor with a FLTK GUI and a C17 core for UT
 
 ## Build
 
+Release builds use `-O2 -DNDEBUG` with GCC/Clang, including dependencies built
+from source. MSVC uses its standard `/O2` Release optimization.
+
 ```sh
 cmake -S . -B build
 cmake --build build
@@ -27,7 +30,7 @@ Requirements:
 - NSIS 3.x with `makensis` available on the packaging host.
 - A Windows build where the `encryptEd` GUI target is enabled.
 
-The installer stages only the GUI application into `<build-dir>/windows-installer/` and emits `encryptEd-<version>-windows-setup.exe`. It defaults to a per-user install under `%LocalAppData%\Programs\EncryptEd`, offers an all-users option in the same setup, creates a Start Menu shortcut, and associates `.txx` files with EncryptEd.
+The installer stages the GUI, etui (when enabled), and bundled default plugins into `<build-dir>/windows-installer/` and emits `encryptEd-<version>-windows-setup.exe`. It defaults to a per-user install under `%LocalAppData%\Programs\EncryptEd`, offers an all-users option in the same setup, creates a Start Menu shortcut, and associates `.txx` files with EncryptEd.
 
 Because the same installer can switch to an all-users install, Windows may request elevation when an administrator-capable account launches setup. The CLI prototype is not included in this installer.
 
@@ -44,14 +47,18 @@ The CLI exists to exercise the core format alongside the desktop editor. By defa
 
 ## Text Plugins
 
-The GUI supports restricted Lua plugins for editing the active document and asking
+The GUI and `etui` support restricted Lua plugins for editing the active document and asking
 for input. Put `.lua` scripts in **Plugins → Open Plugins Folder**, then choose
 **Reload Plugins**. Subdirectories become nested menus. Plugins have no file,
 network, or process access, and each successful run is one undoable text change.
 See [the plugin guide](docs/plugins.md) for the API and installation paths, and
 [examples/plugins](examples/plugins) for example commands.
 
-## Vendored Dependencies
+## Dependencies
+
+Downloaded compilation dependencies belong in the gitignored `external/` directory.
+Repository-owned Lua and modified microz sources remain in `lib/`; MinGW toolchain
+files remain in `lib/fltk/`.
 
 - `lib/lua`: Lua 5.4.9, committed with its MIT license and archive checksum.
   The plugin runtime statically links selected libraries and exposes a restricted API.
@@ -59,13 +66,39 @@ See [the plugin guide](docs/plugins.md) for the API and installation paths, and
   Committed to this repo — it's a modified derivative (ported to C17, archive APIs
   stripped), not a redistributed vendor copy, released under microz's original MIT
   license.
-- `lib/monocypher`: Monocypher 4.0.2 for Argon2id and XChaCha20-Poly1305. **Not** committed
+- `external/monocypher`: Monocypher 4.0.2 for Argon2id and XChaCha20-Poly1305. **Not** committed
   — download it from https://monocypher.org/download/ and place `monocypher.c` and
-  `monocypher.h` in `lib/monocypher/`. CMake fails with instructions if it's missing.
+  `monocypher.h` in `external/monocypher/`. CMake fails with instructions if it's missing.
 - FLTK 1.5 (GUI only): **not** committed — build it as a static library and place it at
-  `lib/fltk/1_5/fltk-linux/` (or `fltk-win64/`/`fltk-win32/` for Windows cross-builds); see
+  `external/fltk/1_5/fltk-linux/` (or `fltk-win64/`/`fltk-win32/` for Windows cross-builds); see
   https://www.fltk.org/software.php. Without it, CMake skips the `encryptEd` GUI target but
   still builds the core library, CLI, and tests.
+
+- `external/ftxui`: FTXUI 5.0.0 for the terminal editor. CMake downloads it here
+  when needed, or uses an existing source checkout. Each build keeps separate
+  generated FTXUI artifacts in its build directory.
+
+## Navigation
+
+Use **Ctrl+F** to find text, **F3** for the next match, and **F2** for the previous
+match. Searches wrap at either end of the document. **Ctrl+R** or Edit's
+**Find / Replace** command opens search and replace with mouse-accessible controls.
+In etui, searches are literal and case-sensitive; an empty replacement deletes
+matches, and Replace All is one undo action (Alt+Z; redo Ctrl+Y/Alt+Y).
+
+The status counter supports **Character count**, **Byte count**, and **Readable size**.
+Choose the mode in Settings (GUI: Preferences). Readable size shows UTF-8 document
+bytes as `123.5 KB`, using decimal units (1 KB = 1,000 bytes), rather than the
+compressed or encrypted file size on disk. The preference is saved.
+
+The vertical scrollbar appears when a document exceeds the editor height. Toggle it in
+**Settings → Vertical Scrollbar** in etui or **Settings → Preferences → Vertical scrollbar**
+in the GUI. The preference is saved; etui supports clicking or dragging the track.
+
+Terminal dialogs support mouse clicks as well as keyboard navigation. The file picker
+provides **Open/Save**, **Parent**, and **Cancel** buttons; Tab cycles through its controls.
+Long About and plugin messages provide **Scroll Up/Down** buttons and mouse-wheel scrolling,
+with Page Up/Page Down retained. Click text fields to place the cursor.
 
 ## License
 

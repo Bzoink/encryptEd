@@ -94,9 +94,9 @@ fi
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
-FLTK_LINUX="$SCRIPT_DIR/lib/fltk/1_5/fltk-linux"
-FLTK_WIN64="$SCRIPT_DIR/lib/fltk/1_5/fltk-win64"
-FLTK_MACOS="$SCRIPT_DIR/lib/fltk/1_5/fltk-macos"
+FLTK_LINUX="$SCRIPT_DIR/external/fltk/1_5/fltk-linux"
+FLTK_WIN64="$SCRIPT_DIR/external/fltk/1_5/fltk-win64"
+FLTK_MACOS="$SCRIPT_DIR/external/fltk/1_5/fltk-macos"
 TOOLCHAIN_WIN64="$SCRIPT_DIR/lib/fltk/mingw64-toolchain.cmake"
 
 BUILD_LINUX_ENC="$SCRIPT_DIR/build"
@@ -213,7 +213,7 @@ build_linux_encrypted() {
     fi
     if [[ $have_fltk_linux -eq 0 ]]; then
         warn "Vendored FLTK not found — encryptEd GUI cannot be built."
-        warn "  Expected: lib/fltk/1_5/fltk-linux/share/fltk/FLTKConfig.cmake"
+        warn "  Expected: external/fltk/1_5/fltk-linux/share/fltk/FLTKConfig.cmake"
         record "$label" SKIPPED; return
     fi
 
@@ -284,7 +284,7 @@ build_windows_encrypted() {
     fi
     if [[ $have_fltk_win64 -eq 0 ]]; then
         warn "Vendored FLTK for Windows not found — encryptEd GUI cannot be built."
-        warn "  Expected: lib/fltk/1_5/fltk-win64/CMake/FLTKConfig.cmake"
+        warn "  Expected: external/fltk/1_5/fltk-win64/CMake/FLTKConfig.cmake"
         record "$label" SKIPPED; return
     fi
 
@@ -360,7 +360,7 @@ build_macos_encrypted() {
     fi
     if [[ $have_fltk_macos -eq 0 ]]; then
         warn "FLTK not found — encryptEd GUI cannot be built."
-        warn "  Option 1: place a macOS FLTK 1.5 build at lib/fltk/1_5/fltk-macos/"
+        warn "  Option 1: place a macOS FLTK 1.5 build at external/fltk/1_5/fltk-macos/"
         warn "  Option 2: brew install fltk"
         record "$label" SKIPPED; return
     fi

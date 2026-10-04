@@ -83,6 +83,7 @@ void EditBuffer::set_text(const std::string &text) {
     if (lines_.empty()) lines_.emplace_back();
     cursor_ = Position{};
     anchor_ = Position{};
+    selection_cursor_ = Position{};
     has_selection_ = false;
     undo_.clear();
     redo_.clear();
@@ -96,6 +97,29 @@ std::string EditBuffer::text() const {
         out += lines_[i];
     }
     return out;
+}
+
+bool EditBuffer::replace_text(const std::string &value) {
+    if (value == text()) return false;
+    push_undo(TAG_STRUCTURAL);
+    replace_range(Position{}, Position{line_count() - 1, line_length(line_count() - 1)}, value);
+    last_tag_ = TAG_NONE;
+    return true;
+}
+
+std::size_t EditBuffer::byte_position(Position p) const {
+    p = clamp(p);
+    std::size_t offset = 0;
+    for (int line = 0; line < p.line; ++line) offset += this->line(line).size() + 1;
+    return offset + col_to_byte(line(p.line), p.col);
+}
+
+Position EditBuffer::position_from_byte(std::size_t byte) const {
+    for (int i = 0; i < line_count(); ++i) {
+        if (byte <= line(i).size()) return Position{i, byte_to_col(line(i), byte)};
+        byte -= line(i).size() + 1;
+    }
+    return Position{line_count() - 1, line_length(line_count() - 1)};
 }
 
 Position EditBuffer::clamp(Position p) const {
@@ -118,6 +142,7 @@ void EditBuffer::move_to(Position p, bool extend) {
         has_selection_ = false;
     }
     cursor_ = p;
+    if (extend) selection_cursor_ = p;
     last_tag_ = TAG_NONE;  // navigation breaks edit coalescing
 }
 
@@ -127,7 +152,7 @@ void EditBuffer::push_undo(int tag) {
         redo_.clear();
         return;
     }
-    undo_.push_back(Snapshot{lines_, cursor_, anchor_, has_selection_});
+    undo_.push_back(Snapshot{lines_, cursor_, anchor_, selection_cursor_, has_selection_});
     if (undo_.size() > 500) undo_.erase(undo_.begin());
     redo_.clear();
     last_tag_ = tag;
@@ -291,6 +316,7 @@ void EditBuffer::goto_line(int one_based_line) {
 void EditBuffer::select_all() {
     anchor_ = Position{0, 0};
     cursor_ = Position{line_count() - 1, line_length(line_count() - 1)};
+    selection_cursor_ = cursor_;
     has_selection_ = true;
     last_tag_ = TAG_NONE;
 }
@@ -310,6 +336,7 @@ void EditBuffer::indent(bool use_spaces, int width) {
     }
     cursor_ = clamp(cursor_);
     anchor_ = clamp(anchor_);
+    selection_cursor_ = clamp(selection_cursor_);
 }
 
 void EditBuffer::outdent(int width) {
@@ -328,6 +355,7 @@ void EditBuffer::outdent(int width) {
     }
     cursor_ = clamp(cursor_);
     anchor_ = clamp(anchor_);
+    selection_cursor_ = clamp(selection_cursor_);
 }
 
 void EditBuffer::duplicate_line() {
@@ -353,24 +381,26 @@ void EditBuffer::remove_line() {
 
 void EditBuffer::undo() {
     if (undo_.empty()) return;
-    redo_.push_back(Snapshot{lines_, cursor_, anchor_, has_selection_});
+    redo_.push_back(Snapshot{lines_, cursor_, anchor_, selection_cursor_, has_selection_});
     Snapshot s = undo_.back();
     undo_.pop_back();
     lines_ = s.lines;
     cursor_ = s.cursor;
     anchor_ = s.anchor;
+    selection_cursor_ = s.selection_cursor;
     has_selection_ = s.has_selection;
     last_tag_ = TAG_NONE;
 }
 
 void EditBuffer::redo() {
     if (redo_.empty()) return;
-    undo_.push_back(Snapshot{lines_, cursor_, anchor_, has_selection_});
+    undo_.push_back(Snapshot{lines_, cursor_, anchor_, selection_cursor_, has_selection_});
     Snapshot s = redo_.back();
     redo_.pop_back();
     lines_ = s.lines;
     cursor_ = s.cursor;
     anchor_ = s.anchor;
+    selection_cursor_ = s.selection_cursor;
     has_selection_ = s.has_selection;
     last_tag_ = TAG_NONE;
 }

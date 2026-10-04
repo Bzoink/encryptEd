@@ -1,6 +1,7 @@
 #include "plugins/plugins.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <chrono>
 
@@ -171,13 +172,34 @@ static void catalog_tests()
     fs::remove_all(root);
 }
 
+static void user_directory_tests()
+{
+#if !defined(_WIN32) && !defined(__APPLE__)
+    const char *original_data = std::getenv("XDG_DATA_HOME");
+    const char *original_home = std::getenv("HOME");
+    bool had_data = original_data != nullptr, had_home = original_home != nullptr;
+    std::string data = original_data ? original_data : "";
+    std::string home = original_home ? original_home : "";
+    setenv("HOME", "/tmp/plugin-user", 1);
+    setenv("XDG_DATA_HOME", "/tmp/plugin-data", 1);
+    CHECK(user_directory() == fs::path("/tmp/plugin-data/encryptEd/plugins"));
+    setenv("XDG_DATA_HOME", "relative", 1);
+    CHECK(user_directory() == fs::path("/tmp/plugin-user/.local/share/encryptEd/plugins"));
+    unsetenv("XDG_DATA_HOME");
+    CHECK(user_directory() == fs::path("/tmp/plugin-user/.local/share/encryptEd/plugins"));
+    if (had_data) setenv("XDG_DATA_HOME", data.c_str(), 1); else unsetenv("XDG_DATA_HOME");
+    if (had_home) setenv("HOME", home.c_str(), 1); else unsetenv("HOME");
+#endif
+}
+
 static void example_tests()
 {
     const auto root = fs::path(ENCRYPTED_SOURCE_DIR) / "examples/plugins";
     auto catalog = discover(root);
-    CHECK(catalog.errors.empty() && catalog.commands.size() == 3);
+    CHECK(catalog.errors.empty() && catalog.commands.size() == 12);
     MockDialogs ui;
     for (const auto &command : catalog.commands) {
+        if (command.label != "Trim trailing spaces" && command.label != "Prefix lines" && command.label != "Change case") continue;
         std::string source, error;
         CHECK(read_script(root, command, source, error));
         Document document; document.text = "one  \ntwo\t\nthree  ";
@@ -194,9 +216,141 @@ static void example_tests()
     }
 }
 
+static std::string contents(const fs::path &path)
+{
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), {});
+}
+
+static void install_tests()
+{
+    auto root = fs::temp_directory_path() / ("encrypted-install-" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    auto source = root / "source", dest = root / "user";
+    write(source / "Nested/Deep/test.lua", "return");
+    write(source / "second.lua", "return");
+    write(source / "ignored.txt", "ignored");
+    CHECK(install_defaults({}, dest).errors.size() == 1);
+    CHECK(!fs::exists(dest));
+    CHECK(!install_defaults(root / "missing", dest).errors.empty());
+    CHECK(!fs::exists(dest));
+    auto result = install_defaults(source, dest);
+    CHECK(result.installed == 2 && result.errors.empty() && result.skipped.empty());
+    CHECK(contents(dest / "Nested/Deep/test.lua") == "return");
+    CHECK(!fs::exists(dest / "ignored.txt"));
+    write(dest / "second.lua", "user edits");
+    write(dest / "custom.lua", "custom");
+    result = install_defaults(source, dest);
+    CHECK(result.installed == 0 && result.skipped.size() == 2 && result.errors.empty());
+    CHECK(contents(dest / "second.lua") == "user edits");
+    CHECK(contents(dest / "custom.lua") == "custom");
+    fs::remove_all(dest / "Nested");
+    write(dest / "Nested", "directory conflict");
+    write(source / "third.lua", "third");
+    result = install_defaults(source, dest);
+    CHECK(result.installed == 1 && !result.errors.empty());
+    CHECK(contents(dest / "Nested") == "directory conflict");
+    fs::remove(dest / "Nested");
+#ifndef _WIN32
+    fs::create_directories(root / "outside");
+    fs::create_directory_symlink(root / "outside", dest / "Nested");
+    result = install_defaults(source, dest);
+    CHECK(!result.errors.empty() && !fs::exists(root / "outside/Deep"));
+    fs::remove(dest / "Nested");
+    fs::remove(dest / "second.lua");
+    write(root / "outside.lua", "untouched");
+    fs::create_symlink(root / "outside.lua", dest / "second.lua");
+    CHECK(!install_defaults(source, dest).errors.empty());
+    CHECK(contents(root / "outside.lua") == "untouched");
+    fs::create_directory_symlink(source, root / "source-link");
+    CHECK(!install_defaults(root / "source-link", dest).errors.empty());
+    fs::permissions(source / "Nested", fs::perms::none);
+    CHECK(!install_defaults(source, dest).errors.empty());
+    fs::permissions(source / "Nested", fs::perms::owner_all);
+#endif
+    auto bundled = install_defaults(fs::path(ENCRYPTED_SOURCE_DIR) / "examples/plugins", root / "bundled");
+    CHECK(bundled.installed == 12 && bundled.errors.empty());
+    CHECK(discover(root / "bundled").commands.size() == 12);
+    write(root / "bundled/Text/Change case.lua", "-- edited default");
+    write(root / "bundled/My custom.lua", "-- custom plugin");
+    fs::remove(root / "bundled/HTML/Compact HTML.lua");
+    bundled = install_defaults(fs::path(ENCRYPTED_SOURCE_DIR) / "examples/plugins", root / "bundled");
+    CHECK(bundled.installed == 1 && bundled.skipped.size() == 11 && bundled.errors.empty());
+    CHECK(contents(root / "bundled/Text/Change case.lua") == "-- edited default");
+    CHECK(contents(root / "bundled/My custom.lua") == "-- custom plugin");
+    auto executable = root / "package/bin/encryptEd";
+    auto data = root / "package/share/encryptEd/default-plugins";
+    fs::create_directories(data);
+    CHECK(default_directory(executable, root / "missing") == data);
+    auto adjacent = executable.parent_path() / "default-plugins";
+    fs::create_directories(adjacent);
+    CHECK(default_directory(executable, data) == adjacent);
+    CHECK(default_directory({}, data) == data);
+    CHECK(default_directory({}, root / "missing").empty());
+    fs::remove_all(adjacent);
+    fs::remove_all(data);
+    auto legacy = executable.parent_path() / "plugin-examples";
+    fs::create_directories(legacy);
+    CHECK(default_directory(executable, root / "missing") == legacy);
+    CHECK(!executable_path().empty());
+    fs::remove_all(root);
+}
+
+struct PlaygroundDialogs : DialogHost {
+    int scope = 1, action = 1, inputs = 0, calls = 0, cancel_at = 0;
+    bool confirm = true;
+    std::string prefix, suffix;
+    DialogReply show(const DialogRequest &request) override {
+        DialogReply reply;
+        reply.accepted = ++calls != cancel_at;
+        reply.confirmed = confirm;
+        if (request.kind == DialogKind::Choose) reply.choice = calls == 1 ? scope : action;
+        if (request.kind == DialogKind::Input) reply.text = inputs++ == 0 ? prefix : suffix;
+        return reply;
+    }
+};
+
+static void playground_tests()
+{
+    auto path = fs::path(ENCRYPTED_SOURCE_DIR) / "examples/plugins/Demo/Text Playground.lua";
+    auto source = contents(path);
+    const std::vector<std::string> expected{"A  B\nÉ猫\n", "a  b\nÉ猫\n", "a B\nÉ猫\n", "1: a  B\n2: É猫\n"};
+    for (int action = 1; action <= 4; ++action) {
+        Document d; d.text = "a  B\nÉ猫\n";
+        PlaygroundDialogs ui; ui.action = action;
+        auto r = run(source, "playground", d, ui);
+        CHECK(r.status == Status::Success && r.document.text == expected[action - 1]);
+        CHECK(r.document.selection_start == 0 && r.document.selection_end == r.document.text.size());
+        CHECK(r.document.cursor == r.document.text.size());
+    }
+    Document d; d.text = "one two three"; d.selection_start = 4; d.selection_end = 7;
+    PlaygroundDialogs ui; ui.prefix = "%["; ui.suffix = "]%";
+    auto r = run(source, "playground", d, ui);
+    CHECK(r.status == Status::Success && r.document.text == "one %[TWO]% three");
+    ui = PlaygroundDialogs{}; ui.scope = 2;
+    r = run(source, "playground", d, ui);
+    CHECK(r.document.text == "ONE TWO THREE");
+    ui = PlaygroundDialogs{}; ui.confirm = false;
+    CHECK(run(source, "playground", d, ui).status == Status::Cancelled);
+    for (int dialog = 1; dialog <= 6; ++dialog) {
+        ui = PlaygroundDialogs{}; ui.cancel_at = dialog;
+        CHECK(run(source, "playground", d, ui).status == Status::Cancelled);
+        CHECK(d.text == "one two three" && d.selection_start == 4 && d.selection_end == 7);
+    }
+    for (const auto &text : {"", "\n", "a\n\nb\n"}) {
+        Document empty; empty.text = text;
+        ui = PlaygroundDialogs{}; ui.action = 4;
+        r = run(source, "playground", empty, ui);
+        CHECK(r.status == Status::Success);
+        if (empty.text.empty()) CHECK(r.document.text.empty());
+        else if (empty.text == "\n") CHECK(r.document.text == "1: \n");
+        else CHECK(r.document.text == "1: a\n2: \n3: b\n");
+    }
+}
+
 int main()
 {
-    runtime_tests(); catalog_tests(); example_tests();
+    runtime_tests(); catalog_tests(); user_directory_tests(); example_tests(); install_tests(); playground_tests();
     if (!failures) std::puts("Plugin tests passed.");
     return failures ? 1 : 0;
 }

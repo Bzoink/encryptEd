@@ -14,7 +14,7 @@ def xd(*args):
 
 with tempfile.TemporaryDirectory(prefix="encrypted-plugin-gui-") as directory:
     root = pathlib.Path(directory)
-    plugins = root / "config/encryptEd/plugins"
+    plugins = root / "data/encryptEd/plugins"
     (plugins / "Nested/Deep").mkdir(parents=True)
     (plugins / "Nested/Deep/Trim.lua").write_text(
         "editor.set_text(editor.text():gsub('[ \\t]+\\n', '\\n'):gsub('[ \\t]+$', ''))"
@@ -23,7 +23,7 @@ with tempfile.TemporaryDirectory(prefix="encrypted-plugin-gui-") as directory:
     (plugins / "Cancel.lua").write_text("editor.set_text('discarded'); ui.input('Cancel this:')")
     document = root / "document.txt"
     document.write_text("original  \nsecond  ")
-    env = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"))
+    env = dict(os.environ, XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"))
     app = subprocess.Popen([str(pathlib.Path(sys.argv[1]).resolve()), str(document)], env=env)
     try:
         time.sleep(1)
@@ -45,22 +45,22 @@ with tempfile.TemporaryDirectory(prefix="encrypted-plugin-gui-") as directory:
             key("ctrl+s")
             assert document.read_text() == expected, repr(document.read_text())
 
-        menu(86)
-        xd("mousemove", "--window", window, 265, 86)
+        menu(110)
+        xd("mousemove", "--window", window, 265, 110)
         time.sleep(0.3)
         key("Right", "Return")
         assert "•" in xd("getwindowname", window)
         save("original\nsecond")
         # Running the same transform again must not dirty the document or add undo.
-        menu(86)
-        xd("mousemove", "--window", window, 265, 86)
+        menu(110)
+        xd("mousemove", "--window", window, 265, 110)
         time.sleep(0.3)
         key("Right", "Return")
         assert "•" not in xd("getwindowname", window)
         key("ctrl+z")
         save("original  \nsecond  ")
 
-        menu(110)
+        menu(134)
         xd("click", 1)
         time.sleep(0.2)
         assert xd("search", "--onlyvisible", "--name", "^Plugin: Cancel$")
@@ -68,7 +68,7 @@ with tempfile.TemporaryDirectory(prefix="encrypted-plugin-gui-") as directory:
         assert "•" not in xd("getwindowname", window)
         save("original  \nsecond  ")
 
-        menu(134)
+        menu(158)
         xd("click", 1)
         time.sleep(0.2)
         assert xd("search", "--onlyvisible", "--name", "^Plugin: Prompt$")
@@ -79,16 +79,16 @@ with tempfile.TemporaryDirectory(prefix="encrypted-plugin-gui-") as directory:
 
         # Refresh the menu after adding a new command.
         (plugins / "New.lua").write_text("editor.set_text('reloaded')")
-        menu(38)
+        menu(62)
         xd("click", 1)
         time.sleep(0.2)
-        menu(134)
+        menu(158)
         xd("click", 1)
         save("reloaded")
         # Deleting all text followed by a plugin insertion previously coalesced
         # into a single FLTK action. Both edits must remain separately undoable.
         key("ctrl+a", "BackSpace")
-        menu(158)
+        menu(182)
         xd("click", 1)
         time.sleep(0.2)
         key("ctrl+a")
@@ -103,6 +103,29 @@ with tempfile.TemporaryDirectory(prefix="encrypted-plugin-gui-") as directory:
         save("")
         key("ctrl+shift+z")
         save("entry")
+        # Install bundled defaults, preserve custom scripts, and repeat safely.
+        prompt_before = (plugins / "Prompt.lua").read_text()
+        menu(38)
+        xd("click", 1)
+        time.sleep(0.3)
+        key("Return")
+        defaults = ["Demo/Text Playground.lua", "Text/Change case.lua",
+                    "Lines/Prefix lines.lua", "Whitespace/Trim trailing spaces.lua",
+                    "Text/Add prefix and suffix.lua", "HTML/Compact HTML.lua",
+                    "HTML/Escape HTML.lua", "HTML/Wrap in tag.lua",
+                    "Lines/Sort lines.lua", "Lines/Remove duplicate lines.lua",
+                    "Code/Comment lines.lua", "Code/Convert identifier style.lua"]
+        for relative in defaults:
+            assert (plugins / relative).is_file(), relative
+        assert (plugins / "Prompt.lua").read_text() == prompt_before
+        modified = plugins / "Text/Change case.lua"
+        modified.write_text("-- user modification\nreturn")
+        menu(38)
+        xd("click", 1)
+        time.sleep(0.3)
+        key("Return")
+        assert modified.read_text() == "-- user modification\nreturn"
+        assert "•" not in xd("getwindowname", window)
         key("ctrl+q")
         assert app.wait(timeout=5) == 0
         print("GUI plugin tree, input, cancellation, reload, dirty state, and undo passed.")

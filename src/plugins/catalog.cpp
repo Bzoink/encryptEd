@@ -17,10 +17,10 @@ fs::path user_directory()
     if (const char *p = std::getenv("HOME"))
         if (*p) return fs::u8path(p) / "Library/Application Support/encryptEd/plugins";
 #else
-    if (const char *p = std::getenv("XDG_CONFIG_HOME"))
+    if (const char *p = std::getenv("XDG_DATA_HOME"))
         if (*p && fs::u8path(p).is_absolute()) return fs::u8path(p) / "encryptEd/plugins";
     if (const char *p = std::getenv("HOME"))
-        if (*p) return fs::u8path(p) / ".config/encryptEd/plugins";
+        if (*p) return fs::u8path(p) / ".local/share/encryptEd/plugins";
 #endif
     return {};
 }

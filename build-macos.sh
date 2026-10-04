@@ -3,7 +3,7 @@
 # Outputs: build-macos/encryptEd.app  (macOS bundle)
 #
 # FLTK is resolved in this order:
-#   1. Vendored:  lib/fltk/1_5/fltk-macos/  (place a macOS static build there)
+#   1. Vendored:  external/fltk/1_5/fltk-macos/  (place a macOS static build there)
 #   2. Homebrew:  $(brew --prefix fltk)/
 #   3. System:    fltk-config in PATH
 
@@ -11,7 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build-macos"
-FLTK_VENDORED="$SCRIPT_DIR/lib/fltk/1_5/fltk-macos"
+FLTK_VENDORED="$SCRIPT_DIR/external/fltk/1_5/fltk-macos"
 
 # ── OS check ─────────────────────────────────────────────────────────────────
 
@@ -48,7 +48,7 @@ elif command -v brew &>/dev/null && brew --prefix fltk &>/dev/null 2>&1; then
     fi
 elif ! command -v fltk-config &>/dev/null; then
     echo "ERROR: FLTK not found. Options:" >&2
-    echo "  1. Place a macOS FLTK 1.5 build at lib/fltk/1_5/fltk-macos/" >&2
+    echo "  1. Place a macOS FLTK 1.5 build at external/fltk/1_5/fltk-macos/" >&2
     echo "  2. Install via Homebrew: brew install fltk" >&2
     ok=0
 fi

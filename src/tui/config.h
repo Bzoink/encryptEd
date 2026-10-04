@@ -12,9 +12,10 @@ extern "C" {
 // ($XDG_CONFIG_HOME/encryptEd/config or %APPDATA%\encryptEd\config).
 struct AppSettings {
     enum IndentMode { INDENT_TABS = 0, INDENT_SPACES = 1 };
-    enum StatusCount { STATUS_COUNT_CHARS = 0, STATUS_COUNT_BYTES = 1 };
+    enum StatusCount { STATUS_COUNT_CHARS = 0, STATUS_COUNT_BYTES = 1, STATUS_COUNT_SIZE = 2 };
 
     bool syn_highlight = true;
+    bool vertical_scrollbar = true;
     IndentMode indent_mode = INDENT_TABS;
     int indent_width = 4;
     StatusCount status_count = STATUS_COUNT_CHARS;

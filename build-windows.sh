@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build-win64"
 TOOLCHAIN="$SCRIPT_DIR/lib/fltk/mingw64-toolchain.cmake"
-FLTK_LIB="$SCRIPT_DIR/lib/fltk/1_5/fltk-win64"
+FLTK_LIB="$SCRIPT_DIR/external/fltk/1_5/fltk-win64"
 
 # ── Dependency checks ────────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ done
 
 if [[ ! -f "$FLTK_LIB/CMake/FLTKConfig.cmake" ]]; then
     echo "ERROR: Vendored FLTK for Windows not found at $FLTK_LIB" >&2
-    echo "       Expected: lib/fltk/1_5/fltk-win64/CMake/FLTKConfig.cmake" >&2
+    echo "       Expected: external/fltk/1_5/fltk-win64/CMake/FLTKConfig.cmake" >&2
     ok=0
 fi
 

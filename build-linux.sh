@@ -6,7 +6,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
-FLTK_LIB="$SCRIPT_DIR/lib/fltk/1_5/fltk-linux"
+FLTK_LIB="$SCRIPT_DIR/external/fltk/1_5/fltk-linux"
 
 # ── Dependency checks ────────────────────────────────────────────────────────
 
@@ -24,7 +24,7 @@ fi
 
 if [[ ! -f "$FLTK_LIB/share/fltk/FLTKConfig.cmake" ]]; then
     echo "ERROR: Vendored FLTK not found at $FLTK_LIB" >&2
-    echo "       Expected: lib/fltk/1_5/fltk-linux/share/fltk/FLTKConfig.cmake" >&2
+    echo "       Expected: external/fltk/1_5/fltk-linux/share/fltk/FLTKConfig.cmake" >&2
     ok=0
 fi
 

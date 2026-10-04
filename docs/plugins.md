@@ -1,16 +1,19 @@
 # Lua plugins
 
-The GUI's **Plugins** menu runs `.lua` files against the active document.
-Each command runs only when selected. Existing Edit → Text commands remain available.
-The terminal editor does not load plugins yet.
+Both the GUI and `etui` terminal editor have a **Plugins** menu that runs `.lua`
+files against the active document. Each command runs only when selected. Existing
+Edit → Text commands remain available. Both editors share the same user plugin folder
+and bundled defaults. On Linux, put both your own scripts and installed defaults
+in `~/.local/share/encryptEd/plugins/` (or the configured XDG data location).
 
 ## Install and organize
 
-Choose **Plugins → Open Plugins Folder**, then place scripts in that folder:
+Choose **Plugins → Open Plugins Folder** in the GUI, or **Plugins → Show Plugins Folder**
+in `etui`, then place scripts in that folder:
 
 | Platform | Directory |
 | --- | --- |
-| Linux | `$XDG_CONFIG_HOME/encryptEd/plugins`, falling back to `~/.config/encryptEd/plugins` |
+| Linux | `$XDG_DATA_HOME/encryptEd/plugins`, falling back to `~/.local/share/encryptEd/plugins` |
 | Windows | `%APPDATA%\encryptEd\plugins` |
 | macOS | `~/Library/Application Support/encryptEd/plugins` |
 
@@ -24,9 +27,75 @@ For example, `Whitespace/Trim trailing spaces.lua` appears as
 **Plugins → Whitespace → Trim trailing spaces**. One script is one command;
 there is no manifest or registration function.
 
-Copy the examples from `examples/plugins` in the source tree, or from
-`share/encryptEd/plugin-examples` in an installed package, into your plugin folder.
+Choose **Plugins → Install Default Plugins** to install the bundled collection in
+one click. It includes twelve ready-made commands for HTML, coding, lines, and text, plus
+Demo → Text Playground (interactive transformation and dialog examples).
+Subfolders are preserved and the menu refreshes automatically.
+
+Installation adds missing scripts only: existing files, including edited defaults,
+are always kept. The result dialog lists kept files and any errors. Run installation
+again to add newly shipped defaults, or delete an unwanted edited default before
+reinstalling to restore its bundled version. Symlinks and directory conflicts are
+rejected. Installation never runs scripts or changes the document.
+
+Bundled defaults live separately in `default-plugins/` and are copied into your
+active `plugins/` folder by Install Default Plugins. Defaults ship with the
+application and alongside development build executables;
+macOS app bundles contain their own copy. If the collection is missing, reinstall
+the application with its plugin examples.
+
+You can also copy the examples from `examples/plugins` in the source tree, or from
+`share/encryptEd/default-plugins` in an installed package, into your plugin folder.
 Examples are distributed separately and never overwrite your scripts.
+
+## Local Linux installation
+
+For the terminal ZIP bundle, install the executable and its separate default collection:
+
+```sh
+unzip etui-linux-plugins.zip -d /tmp/etui-install
+mkdir -p ~/.local/bin ~/.local/share/encryptEd
+install -m 755 /tmp/etui-install/etui ~/.local/bin/etui
+cp -r /tmp/etui-install/default-plugins ~/.local/share/encryptEd/
+```
+
+Launch `etui` and choose **Plugins → Install Default Plugins**. Your active scripts
+then live in `~/.local/share/encryptEd/plugins/`, where you can also add your own
+`.lua` files and subfolders. Choose Reload Plugins after adding files.
+
+Older versions used `~/.config/encryptEd/plugins/`. Copy any scripts you kept there
+to the new active folder, keeping existing destination files. Settings still use
+the configuration directory; scripts use the data directory.
+
+## Default collection
+
+Commands use selected text, or the whole document when nothing is selected.
+Line commands expand selections to complete lines, excluding the next line when
+selection ends at its start. They preserve a final newline without creating an
+extra line. New commands select their result. Changes are one undo action;
+canceling any dialog discards the run.
+
+| Command | Behavior |
+| --- | --- |
+| Text → Add prefix and suffix | Choose each line or the exact block, then enter literal, single-line prefix and suffix strings. Blank lines are included; `%` is literal. |
+| HTML → Compact HTML | Remove whitespace-only gaps between tags, including inline tags. Confirm first: `<span>Hello</span> <span>world</span>` becomes `<span>Hello</span><span>world</span>` and may render as joined words. |
+| HTML → Escape HTML | Choose text or attribute-value escaping. Escape `&`, `<`, `>`; attribute mode also escapes both quote characters. Existing entities are escaped again (`&amp;` → `&amp;amp;`). |
+| HTML → Wrap in tag | Enter a tag name, such as `div` or `my-tag`. Wrap the exact scope without added whitespace. Attributes and void tags such as `img` are rejected. |
+| Lines → Sort lines | Ascending or descending, case-sensitive byte ordering. Includes blank lines and retains duplicates; this is not locale-aware sorting. |
+| Lines → Remove duplicate lines | Keep the first occurrence of each exact line, including blank lines; report the number removed. |
+| Code → Comment lines | Add or remove a literal prefix after indentation, default `//`. Add one separating space; removal strips at most one space. Whitespace-only lines stay unchanged. |
+| Code → Convert identifier style | Convert one ASCII name per line to snake_case, camelCase, or PascalCase. Split acronym and camel-case boundaries, spaces, underscores, and hyphens: `HTTPServer` → `http_server`. Preserve indentation and blank lines; reject punctuation, non-ASCII names, and leading digits. This does not rename symbols throughout source code. |
+| Text → Change case | ASCII uppercase/lowercase for the exact selection or document. |
+| Lines → Prefix lines | Add a literal prefix to complete lines. |
+| Whitespace → Trim trailing spaces | Remove trailing spaces and tabs in the chosen scope. |
+| Demo → Text Playground | Interactive transformations, prefix/suffix input, confirmation, statistics, and cursor/selection control. |
+
+Compact HTML uses a quote-aware scan of the complete document, so selections
+inside `pre`, `textarea`, `script`, and `style` remain protected. Comments, attribute
+values, and ordinary text are preserved. Only eligible whitespace gaps entirely
+inside the selected scope are removed. Unterminated tags, quotes, comments, or
+protected elements cause an error without edits. This is whitespace processing,
+not a complete HTML parser or minifier.
 
 ## First plugin
 
@@ -39,6 +108,22 @@ editor.replace_selection('Hello, ' .. name .. '!')
 
 Selecting the command asks for a name and replaces the selection, or inserts at
 the cursor when nothing is selected. Canceling the dialog discards the whole run.
+
+## Terminal controls
+
+In `etui`, press **Alt+P** to open Plugins, or open the menu bar with **F9** and
+navigate with the arrow keys. Folder submenus list commands; folders deeper than
+one submenu level open a choice dialog with **.. (Back)** navigation.
+
+Plugin dialogs support keyboard and mouse input. Use arrows to select a choice,
+**Tab** to move between fields and buttons, and **Enter** to accept. Use
+**Page Up/Page Down** to scroll long prompts or messages. Inputs are
+single-line and support normal cursor editing. Confirmation dialogs initially
+focus **No**; accepting No returns `false`, while **Escape** cancels the whole run.
+Escape also cancels message dialogs. While dialogs are open, the editor is suspended.
+**Alt+Z** or **Edit → Undo** undoes a plugin change; **Ctrl+Y** or **Alt+Y** redoes it.
+FTXUI 5 discards Ctrl+Z, so use Alt+Z in the terminal editor. Position-only commands and
+no-op transformations do not mark the document modified or add undo steps.
 
 ## Text and positions
 
@@ -93,7 +178,7 @@ cursor-only or selection-only command updates those positions without changing t
 Failure or cancellation leaves the original text, cursor, selection, and undo
 history untouched. Undo/redo restores text using the editor's normal behavior;
 selection changes are not separate undo actions.
-Use **Edit → Undo** / **Edit → Redo** (Ctrl+Z / Ctrl+Shift+Z) to move through
+In the GUI, use **Edit → Undo** / **Edit → Redo** (Ctrl+Z / Ctrl+Shift+Z) to move through
 plugin changes and ordinary edits. Plugin operations remain separate from
 typing immediately before or after them.
 
@@ -142,7 +227,7 @@ FLTK widget storage can only be cleared on a best-effort basis.
 ## Development
 
 The runtime and discovery library has no GUI dependency. `DialogHost` permits
-mock dialogs in tests and a future terminal adapter. Add a script, choose Reload
+mock dialogs in tests and the terminal adapter. Add a script, choose Reload
 Plugins, and invoke it; errors identify the plugin and include Lua's source line
 where available. Errors are displayed in the editor and are not written to a log.
 

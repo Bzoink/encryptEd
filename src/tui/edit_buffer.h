@@ -33,6 +33,14 @@ public:
     // Whole-document access. set_text() splits on '\n'; any trailing '\r'
     // is stripped from each line so the model is newline-agnostic.
     void set_text(const std::string &text);
+    // Replace as one undo action without resetting earlier history.
+    bool replace_text(const std::string &text);
+    std::size_t byte_position(Position p) const;
+    Position position_from_byte(std::size_t byte) const;
+    void set_selection(Position first, Position last) {
+        anchor_ = clamp(first); selection_cursor_ = clamp(last);
+        has_selection_ = anchor_ != selection_cursor_;
+    }
     std::string text() const;  // lines joined with '\n'
 
     const std::vector<std::string> &lines() const { return lines_; }
@@ -50,11 +58,12 @@ public:
     void extend_cursor(Position p) {
         if (!has_selection_) { anchor_ = cursor_; has_selection_ = true; }
         cursor_ = clamp(p);
+        selection_cursor_ = cursor_;
     }
 
     bool has_selection() const { return has_selection_ && selection_start() != selection_end(); }
-    Position selection_start() const { return cursor_ < anchor_ ? cursor_ : anchor_; }
-    Position selection_end() const { return cursor_ < anchor_ ? anchor_ : cursor_; }
+    Position selection_start() const { return selection_cursor_ < anchor_ ? selection_cursor_ : anchor_; }
+    Position selection_end() const { return selection_cursor_ < anchor_ ? anchor_ : selection_cursor_; }
     void clear_selection() { has_selection_ = false; }
     std::string selected_text() const;
 
@@ -104,12 +113,14 @@ private:
         std::vector<std::string> lines;
         Position cursor;
         Position anchor;
+        Position selection_cursor;
         bool has_selection;
     };
 
     std::vector<std::string> lines_{std::string()};
     Position cursor_{};
     Position anchor_{};
+    Position selection_cursor_{};
     bool has_selection_ = false;
     bool overwrite_ = false;
 
