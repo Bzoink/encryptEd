@@ -17,6 +17,37 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+## Linux Desktop Install
+
+`install.sh` installs the built editors into the XDG/freedesktop locations that
+every Linux desktop uses: `<prefix>/bin` for the binaries,
+`<prefix>/share/applications` for the desktop entry, and
+`<prefix>/share/icons/hicolor` for the icons. It refreshes the desktop-entry and
+icon caches afterwards, so the menu entry appears without a re-login.
+
+```sh
+./install.sh                  # per-user install to ~/.local (no sudo)
+./install.sh --system         # system-wide install to /usr/local (sudo)
+./install.sh --stage          # stage the tree under build/install-root/ instead
+./install.sh --uninstall      # remove a previous install
+```
+
+`etui` is installed when it has been built; add `--with-cli` to also install the
+`encrypted_cli` prototype, and `--build` to build first if needed. Run
+`./install.sh --help` for all options, including `--prefix DIR` and `--stage=DIR`.
+A prior `./build.sh` run is required unless `--build` is given.
+
+The same result without the helper script:
+
+```sh
+cmake --install build --prefix ~/.local        # per-user
+sudo cmake --install build --prefix /usr/local # system-wide
+```
+
+The menu entry runs `encryptEd` from `PATH`, so `<prefix>/bin` must be on `PATH`
+(system installs are; add `~/.local/bin` for per-user installs). Uninstalling
+keeps `~/.local/share/encryptEd/plugins`, where your own Lua plugins live.
+
 ## Windows Installer
 
 After configuring a Windows-target build directory that produces the `encryptEd` GUI target, build the NSIS installer with:
