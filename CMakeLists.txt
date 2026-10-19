@@ -600,6 +600,14 @@ if(TARGET etui AND UNIX AND NOT CMAKE_CROSSCOMPILING)
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/search_smoke.py
                 $<TARGET_FILE:etui>)
         set_tests_properties(tui_search_smoke PROPERTIES TIMEOUT 120)
+        add_test(NAME tui_hscroll_smoke
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/hscroll_smoke.py
+                $<TARGET_FILE:etui>)
+        set_tests_properties(tui_hscroll_smoke PROPERTIES TIMEOUT 120)
+        add_test(NAME tui_stdin_smoke
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/stdin_smoke.py
+                $<TARGET_FILE:etui>)
+        set_tests_properties(tui_stdin_smoke PROPERTIES TIMEOUT 120)
     endif()
 endif()
 

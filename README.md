@@ -76,6 +76,25 @@ printf '%s\n' "$PASSPHRASE" | build/encrypted_cli pack input.txt output.txx --pa
 
 The CLI exists to exercise the core format alongside the desktop editor. By default it prompts for the passphrase without echoing it; use `--password-stdin` for scripts.
 
+## Terminal Editor
+
+`etui` opens standard input as a document whenever stdin is not a terminal, so it
+works with pipes and here-documents:
+
+```sh
+cat notes.txt | etui
+etui - < draft.md
+git show HEAD:README.md | etui
+```
+
+The keyboard keeps coming from the terminal. The document has no path, so **Save**
+opens the Save As dialog; a path argument takes precedence over stdin.
+
+Long lines scroll horizontally instead of wrapping: the view follows the cursor,
+**Home**/**End** jump to either end of the line, and horizontal wheel events shift
+it a few columns. A position bar appears in the status line while a visible line is
+wider than the window.
+
 ## Text Plugins
 
 The GUI and `etui` support restricted Lua plugins for editing the active document and asking

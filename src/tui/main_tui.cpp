@@ -8,6 +8,7 @@
 #include <memory>
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <ftxui/component/component.hpp>
@@ -82,14 +83,27 @@ std::string join_with_style(const std::string &lf_text, txx_newline_style style)
 
 class EditorApp : public ComponentBase {
 public:
-    explicit EditorApp(ScreenInteractive *screen, std::string open_path)
+    explicit EditorApp(App *screen, std::string open_path, std::string piped_text = "")
         : screen_(screen), pending_open_(std::move(open_path)) {
         config_load(settings_);
         buffer_.set_text("");
         build_menus();
         set_status("New document");
-        if (!pending_open_.empty())
+        if (!piped_text.empty()) {
+            // Document read from standard input: no path, so saving uses Save As.
+            int mixed = 0;
+            txx_newline_style nl = txx_text_detect_newlines(
+                reinterpret_cast<const uint8_t *>(piped_text.data()), piped_text.size(), &mixed);
+            if (nl != TXX_NEWLINE_UNKNOWN) settings_.newline_style = nl;
+            buffer_.set_text(piped_text);
+            filepath_.clear();
+            password_.clear();
+            dirty_ = true;
+            syn_lang_ = SynLang::None;
+            set_status("Read " + std::to_string(piped_text.size()) + " bytes from stdin (unsaved)");
+        } else if (!pending_open_.empty()) {
             open_path_flow(pending_open_);
+        }
     }
 
     bool Focusable() const override { return true; }
@@ -98,6 +112,8 @@ public:
         Dimensions dim = Terminal::Size();
         int rows = std::max(1, dim.dimy - 2);
         ensure_visible(rows);
+        const int cols = text_cols();
+        ensure_visible_h(cols);
 
         Elements doc;
         int total = buffer_.line_count();
@@ -112,7 +128,7 @@ public:
 
         for (int i = 0; i < rows; ++i) {
             int line = scroll_top_ + i;
-            doc.push_back(line < total ? render_line(line, syn_st) : text(""));
+            doc.push_back(line < total ? render_line(line, syn_st, cols) : text(""));
         }
 
         Element editor = vbox(std::move(doc)) | flex;
@@ -416,8 +432,10 @@ private:
         return overlay;
     }
 
-    Element render_line(int line_idx, SynState &syn_st) {
+    Element render_line(int line_idx, SynState &syn_st, int cols) {
         const std::string &ln = buffer_.line(line_idx);
+        const std::size_t v0 = slice_from_cell(ln, scroll_left_);
+        const std::size_t v1 = slice_from_cell(ln, scroll_left_ + cols);
         Position sel_a = buffer_.selection_start();
         Position sel_b = buffer_.selection_end();
         bool has_sel     = buffer_.has_selection();
@@ -429,7 +447,7 @@ private:
                 syn_parse_line(ln, syn_st, syn_lang_);
             int from = (line_idx == sel_a.line) ? sel_a.col : 0;
             int to   = (line_idx == sel_b.line) ? sel_b.col : buffer_.line_length(line_idx);
-            return render_selection_line(ln, from, to);
+            return render_selection_line(ln, from, to, cols);
         }
 
         // Locate cursor within this line so we can split a styled segment at it.
@@ -479,6 +497,8 @@ private:
         Elements out;
         for (const auto &seg : segs) {
             auto emit = [&](std::size_t a, std::size_t b, bool is_cur) {
+                a = std::max(a, v0);
+                b = std::min(b, v1);
                 if (a >= b) return;
                 Element e = text(ln.substr(a, b - a));
                 if (seg.has_col) e = e | color(seg.col);
@@ -493,23 +513,31 @@ private:
                 emit(cur_b + cur_clen, seg.b, false);
             }
         }
-        // Cursor past end of line: trailing inverted space.
-        if (show_cursor && cur_clen == 0)
+        // Cursor past end of line: trailing inverted space (when in view).
+        if (show_cursor && cur_clen == 0 && cell_at(ln, ln.size()) < scroll_left_ + cols)
             out.push_back(text(" ") | inverted | focusCursorBarBlinking);
 
+        // A double-width glyph straddling the left edge leaves a one-cell gap.
+        const int pad = cell_at(ln, v0) - scroll_left_;
+        if (pad > 0) out.insert(out.begin(), text(std::string(static_cast<std::size_t>(pad), ' ')));
         if (out.empty()) out.push_back(text(""));
         return hbox(std::move(out));
     }
 
-    Element render_selection_line(const std::string &ln, int from, int to) {
-        std::size_t b_from = byte_at(ln, from);
-        std::size_t b_to   = byte_at(ln, to);
+    Element render_selection_line(const std::string &ln, int from, int to, int cols) {
+        const std::size_t v0 = slice_from_cell(ln, scroll_left_);
+        const std::size_t v1 = slice_from_cell(ln, scroll_left_ + cols);
+        const std::size_t b_from = std::max(byte_at(ln, from), v0);
+        const std::size_t b_to   = std::min(byte_at(ln, to), v1);
         Elements spans;
-        if (b_from > 0) spans.push_back(text(ln.substr(0, b_from)));
-        std::string mid = ln.substr(b_from, b_to - b_from);
-        if (mid.empty() && from == to) mid = " ";
-        spans.push_back(text(mid) | inverted);
-        if (b_to < ln.size()) spans.push_back(text(ln.substr(b_to)));
+        const int pad = cell_at(ln, v0) - scroll_left_;
+        if (pad > 0) spans.push_back(text(std::string(static_cast<std::size_t>(pad), ' ')));
+        if (b_from > v0) spans.push_back(text(ln.substr(v0, b_from - v0)));
+        std::string mid = b_to > b_from ? ln.substr(b_from, b_to - b_from) : std::string();
+        const int sel_cell = cell_at(ln, byte_at(ln, from)) - scroll_left_;
+        if (mid.empty() && from == to && sel_cell >= 0 && sel_cell < cols) mid = " ";
+        if (!mid.empty()) spans.push_back(text(mid) | inverted);
+        if (b_to < v1) spans.push_back(text(ln.substr(b_to, v1 - b_to)));
         return hbox(std::move(spans));
     }
 
@@ -521,7 +549,20 @@ private:
                 : settings_.status_count == AppSettings::STATUS_COUNT_SIZE
                     ? human_readable_size(buffer_.byte_count())
                     : std::to_string(buffer_.char_count()) + " chars";
-        std::string right = count + "  " + newline_label(settings_.newline_style) +
+        // Horizontal position indicator, shown only when a visible line overflows.
+        std::string hbar;
+        const int cols = text_cols();
+        const int max_left = max_scroll_left(cols);
+        if (max_left > 0) {
+            constexpr int kWidth = 8;
+            const int total = cols + max_left;
+            const int thumb = std::max(1, kWidth * cols / std::max(1, total));
+            const int pos   = (kWidth - thumb) * scroll_left_ / std::max(1, max_left);
+            for (int i = 0; i < kWidth; ++i)
+                hbar += (i >= pos && i < pos + thumb) ? "█" : "░";
+            hbar += "  ";
+        }
+        std::string right = count + "  " + hbar + newline_label(settings_.newline_style) +
                             "  Ln " + std::to_string(c.line + 1) +
                             ", Col " + std::to_string(c.col + 1) +
                             "  " + (buffer_.overwrite() ? "OVR" : "INS") + " ";
@@ -835,7 +876,7 @@ private:
         int width = 0;
         while (offset < value.size()) {
             const auto next = utf8_next(value, offset);
-            const int glyph_width = string_width(value.substr(offset, next - offset));
+            const int glyph_width = string_width(std::string_view(value.data() + offset, next - offset));
             if (width + glyph_width > std::max(0, cell)) break;
             width += glyph_width;
             offset = next;
@@ -1364,6 +1405,14 @@ private:
         const Mouse &m = e.mouse();
         if (m.button == Mouse::WheelUp)   { buffer_.move_page(-3, false); return true; }
         if (m.button == Mouse::WheelDown) { buffer_.move_page( 3, false); return true; }
+        if (m.button == Mouse::WheelLeft)  {
+            for (int i = 0; i < 4; ++i) buffer_.move_left(false);
+            return true;
+        }
+        if (m.button == Mouse::WheelRight) {
+            for (int i = 0; i < 4; ++i) buffer_.move_right(false);
+            return true;
+        }
         if (m.button == Mouse::Left) {
             // A release after toggling a menu closed belongs to the same
             // click; only a press on a closed menu should open it again.
@@ -1395,7 +1444,7 @@ private:
             // Editor area: row 1 = first editor line.
             int line = scroll_top_ + m.y - 1;
             line = std::clamp(line, 0, buffer_.line_count() - 1);
-            const int col = col_at(buffer_.line(line), byte_at_cell(buffer_.line(line), m.x));
+            const int col = col_at(buffer_.line(line), byte_at_cell(buffer_.line(line), m.x + scroll_left_));
             Position p{line, col};
             if (m.motion == Mouse::Released) {
                 mouse_down_ = false;
@@ -1687,7 +1736,8 @@ private:
     void cmd_new() {
         confirm_discard([this]{
             buffer_.set_text(""); filepath_.clear(); password_.clear();
-            dirty_ = false; syn_lang_ = SynLang::None; set_status("New document");
+            dirty_ = false; syn_lang_ = SynLang::None; scroll_top_ = 0; scroll_left_ = 0;
+            set_status("New document");
         });
     }
 
@@ -1745,7 +1795,7 @@ private:
                 reinterpret_cast<const uint8_t *>(plain.data()), plain.size(), &mixed);
             if (nl != TXX_NEWLINE_UNKNOWN) settings_.newline_style = nl;
             buffer_.set_text(plain);
-            filepath_ = path; password_.clear(); dirty_ = false; scroll_top_ = 0;
+            filepath_ = path; password_.clear(); dirty_ = false; scroll_top_ = 0; scroll_left_ = 0;
             syn_lang_ = syn_detect(path);
             set_status("Opened " + base_name(path) + " (plain text)");
             return true;
@@ -1771,7 +1821,7 @@ private:
                 reinterpret_cast<const uint8_t *>(plain.data()), plain.size(), &mixed);
             if (nl != TXX_NEWLINE_UNKNOWN) settings_.newline_style = nl;
             buffer_.set_text(plain);
-            filepath_ = path; password_ = pw; dirty_ = false; scroll_top_ = 0;
+            filepath_ = path; password_ = pw; dirty_ = false; scroll_top_ = 0; scroll_left_ = 0;
             syn_lang_ = syn_detect(path);
             set_status("Opened " + base_name(path));
         });
@@ -2003,6 +2053,65 @@ private:
         scroll_top_ = std::clamp(scroll_top_, 0, std::max(0, buffer_.line_count() - rows));
     }
 
+    int view_rows() const { return std::max(1, Terminal::Size().dimy - 2); }
+
+    // Columns available to text; the vertical scrollbar takes the last one.
+    int text_cols() const {
+        const bool bar = settings_.vertical_scrollbar && buffer_.line_count() > view_rows();
+        return std::max(1, Terminal::Size().dimx - (bar ? 1 : 0));
+    }
+
+    static int cell_width(const std::string &line) {
+        int cells = 0;
+        std::size_t offset = 0;
+        while (offset < line.size()) {
+            const auto next = utf8_next(line, offset);
+            cells += string_width(std::string_view(line.data() + offset, next - offset));
+            offset = next;
+        }
+        return cells;
+    }
+
+    static int cell_at(const std::string &line, std::size_t byte) {
+        int cells = 0;
+        std::size_t offset = 0;
+        const std::size_t target = std::min(byte, line.size());
+        while (offset < target) {
+            const auto next = utf8_next(line, offset);
+            cells += string_width(std::string_view(line.data() + offset, next - offset));
+            offset = next;
+        }
+        return cells;
+    }
+
+    // Byte offset of the first glyph starting at or after `cell`, so a slice
+    // never begins in the middle of a double-width glyph.
+    static std::size_t slice_from_cell(const std::string &line, int cell) {
+        std::size_t offset = byte_at_cell(line, cell);
+        while (offset < line.size() && cell_at(line, offset) < cell)
+            offset = utf8_next(line, offset);
+        return offset;
+    }
+
+    int max_scroll_left(int cols) const {
+        int widest = 0;
+        const int rows = view_rows();
+        for (int i = 0; i < rows; ++i) {
+            const int line = scroll_top_ + i;
+            if (line >= buffer_.line_count()) break;
+            widest = std::max(widest, cell_width(buffer_.line(line)));
+        }
+        return std::max(0, widest + 1 - cols);  // +1 keeps the end-of-line cursor reachable
+    }
+
+    void ensure_visible_h(int cols) {
+        const std::string &ln = buffer_.line(buffer_.cursor().line);
+        const int cc = cell_at(ln, byte_at(ln, buffer_.cursor().col));
+        if (cc < scroll_left_) scroll_left_ = cc;
+        if (cc >= scroll_left_ + cols) scroll_left_ = cc - cols + 1;
+        scroll_left_ = std::clamp(scroll_left_, 0, max_scroll_left(cols));
+    }
+
     bool code_state(int idx) const {
         bool inside = false;
         for (int i = 0; i < idx; ++i)
@@ -2040,7 +2149,7 @@ private:
     }
 
     // ---- State -------------------------------------------------------------
-    ScreenInteractive *screen_;
+    App *screen_;
     EditBuffer         buffer_;
     bool plugin_running_ = false;
     plugins::Catalog plugin_catalog_;
@@ -2058,6 +2167,7 @@ private:
     bool               dirty_      = false;
     bool               mouse_down_ = false;
     int                scroll_top_ = 0;
+    int                scroll_left_ = 0;
     SynLang            syn_lang_   = SynLang::None;
 
     enum class DialogKind { None, Prompt, Confirm, Alert };
@@ -2097,8 +2207,20 @@ private:
 
 int main(int argc, char **argv) {
     std::string path = (argc > 1) ? argv[1] : "";
+    std::string piped;
 
 #ifndef _WIN32
+    // `etui -` or `something | etui` opens standard input as the document;
+    // FTXUI then takes the keyboard from the terminal (/dev/tty). A path
+    // argument wins, so scripts can redirect stdin without changing behaviour.
+    if (path == "-") path.clear();
+    if (path.empty() && !isatty(STDIN_FILENO)) {
+        char buffer[65536];
+        ssize_t count = 0;
+        while ((count = read(STDIN_FILENO, buffer, sizeof buffer)) > 0)
+            piped.append(buffer, static_cast<std::size_t>(count));
+    }
+
     struct termios original{};
     bool restore = isatty(STDIN_FILENO) && tcgetattr(STDIN_FILENO, &original) == 0;
     if (restore) {
@@ -2111,8 +2233,12 @@ int main(int argc, char **argv) {
 #endif
 
     {
-        auto screen = ScreenInteractive::Fullscreen();
-        auto app    = std::make_shared<EditorApp>(&screen, path);
+        auto screen = App::Fullscreen();
+        // Ctrl+C (copy) and Ctrl+Z (undo) are editor commands; without these
+        // FTXUI also exits or suspends the process when they are pressed.
+        screen.ForceHandleCtrlC(false);
+        screen.ForceHandleCtrlZ(false);
+        auto app    = std::make_shared<EditorApp>(&screen, path, std::move(piped));
         screen.Loop(app);
     }
 
