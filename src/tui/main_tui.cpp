@@ -37,7 +37,6 @@ extern "C" {
 #include "gui/text_transform.h"
 #include "tui/clipboard.h"
 #include "tui/config.h"
-#include "tui/cursor.h"
 #include "tui/plugin_buffer.h"
 #include "tui/plugin_dialog.h"
 #include "tui/edit_buffer.h"
@@ -95,8 +94,7 @@ public:
 
     bool Focusable() const override { return true; }
 
-    Element Render() override {
-        hide_cursor_for_redraw();
+    Element OnRender() override {
         Dimensions dim = Terminal::Size();
         int rows = std::max(1, dim.dimy - 2);
         ensure_visible(rows);
@@ -139,7 +137,7 @@ public:
         if (search_panel_open_)
             base = dbox({base, search_panel_->Render()});
 
-        return cursor_frame(base);
+        return base;
     }
 
     bool OnEvent(Event event) override {
@@ -348,7 +346,7 @@ private:
 
             Element row;
             if (e.checked) {
-                auto state = EntryState{e.label, e.checked(), false, false};
+                auto state = EntryState{e.label, e.checked(), false, false, -1};
                 auto base  = e.checkbox
                     ? CheckboxOption::Simple().transform(state)
                     : RadioboxOption::Simple().transform(state);
@@ -537,7 +535,7 @@ private:
 
         // Helper: render a single button, reflected for mouse hit-testing.
         auto make_btn = [](const std::string &label, bool active, Box &box) -> Element {
-            Element e = ButtonOption::Simple().transform({label, false, active, active});
+            Element e = ButtonOption::Simple().transform({label, false, active, active, -1});
             return e | reflect(box);
         };
 
@@ -774,7 +772,7 @@ private:
 
             // "Encrypted (.txx)" checkbox — mirrors whether the name ends in .txx.
             auto cbstate = EntryState{"Encrypted (.txx)", name_is_encrypted(),
-                                      false, save_focus_ == FOCUS_ENC};
+                                      false, save_focus_ == FOCUS_ENC, -1};
             Element cb = hbox({text(" "),
                               CheckboxOption::Simple().transform(cbstate), filler()})
                        | size(WIDTH, EQUAL, inner_w);
@@ -793,7 +791,7 @@ private:
         rows.push_back(separator());
         auto button = [&](const std::string &label, int focus_id, Box &box) {
             const bool active = save_focus_ == focus_id;
-            auto result = ButtonOption::Simple().transform({label, false, active, active});
+            auto result = ButtonOption::Simple().transform({label, false, active, active, -1});
             return result | reflect(box);
         };
         rows.push_back(hbox({filler(), button("Parent", FOCUS_PARENT, picker_parent_box_),
@@ -1303,7 +1301,7 @@ private:
         }
 
         const std::string &in = e.input();
-        // FTXUI 5 discards the CAN/SUB bytes used by Ctrl+X and Ctrl+Z.
+        // Alt+Z / Alt+Y mirror Ctrl+Z / Ctrl+Y for convenience.
         if (in == "\x1bz") { edit([&]{ buffer_.undo(); }); return true; }
         if (in == "\x1by") { edit([&]{ buffer_.redo(); }); return true; }
         if (in.size() == 1) {

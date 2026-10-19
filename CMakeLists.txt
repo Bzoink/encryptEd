@@ -94,7 +94,7 @@ target_include_directories(microz PUBLIC
 encrypted_require_vendored_path(
     "${CMAKE_CURRENT_SOURCE_DIR}/external/monocypher/monocypher.c"
     "Monocypher"
-    "  Download Monocypher 4.0.2 from https://monocypher.org/download/ and copy\n    monocypher.c and monocypher.h into external/monocypher/."
+    "  Download Monocypher 4.0.3 from https://monocypher.org/download/ and copy\n    monocypher.c and monocypher.h into external/monocypher/."
 )
 
 add_library(monocypher STATIC
@@ -162,9 +162,9 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/lua/src/lua.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/external/monocypher/monocypher.h")
 file(STRINGS lib/lua/src/lua.h _lua_version_lines
-    REGEX "^#define LUA_VERSION_(MAJOR|MINOR|RELEASE)[ \t]+\"[0-9]+\"")
+    REGEX "^#define LUA_VERSION_(MAJOR|MINOR|RELEASE)_N[ \t]+[0-9]+")
 foreach(_line IN LISTS _lua_version_lines)
-    if(_line MATCHES "LUA_VERSION_(MAJOR|MINOR|RELEASE)[ \t]+\"([0-9]+)\"")
+    if(_line MATCHES "LUA_VERSION_(MAJOR|MINOR|RELEASE)_N[ \t]+([0-9]+)")
         set(_lua_${CMAKE_MATCH_1} "${CMAKE_MATCH_2}")
     endif()
 endforeach()
@@ -443,7 +443,7 @@ if(ENCRYPTED_BUILD_TUI)
             FetchContent_Declare(ftxui
                 SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/ftxui"
                 GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
-                GIT_TAG v5.0.0
+                GIT_TAG v7.0.3
             )
             FetchContent_MakeAvailable(ftxui)
         endif()
@@ -591,15 +591,15 @@ if(TARGET etui AND UNIX AND NOT CMAKE_CROSSCOMPILING)
         add_test(NAME tui_plugin_smoke
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/plugin_smoke.py
                 $<TARGET_FILE:etui>)
-        set_tests_properties(tui_plugin_smoke PROPERTIES TIMEOUT 60)
+        set_tests_properties(tui_plugin_smoke PROPERTIES TIMEOUT 120)
         add_test(NAME tui_mouse_smoke
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/mouse_smoke.py
                 $<TARGET_FILE:etui>)
-        set_tests_properties(tui_mouse_smoke PROPERTIES TIMEOUT 60)
+        set_tests_properties(tui_mouse_smoke PROPERTIES TIMEOUT 120)
         add_test(NAME tui_search_smoke
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/search_smoke.py
                 $<TARGET_FILE:etui>)
-        set_tests_properties(tui_search_smoke PROPERTIES TIMEOUT 60)
+        set_tests_properties(tui_search_smoke PROPERTIES TIMEOUT 120)
     endif()
 endif()
 

@@ -2,7 +2,6 @@
 #define TUI_PLUGIN_DIALOG_H
 
 #include "plugins/plugins.h"
-#include "tui/cursor.h"
 #include <algorithm>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -59,7 +58,6 @@ public:
         else if (request.kind == plugins::DialogKind::Confirm) no->TakeFocus();
         else ok->TakeFocus();
         auto renderer = Renderer(container, [&] {
-            hide_cursor_for_redraw();
             const int field_height = std::max(1, std::min(12, (Terminal::Size().dimy - 16) / 2));
             int prompt_height = std::max(1, std::min(
                 request.kind == plugins::DialogKind::Message ? 24 : 10,
@@ -92,7 +90,7 @@ public:
             rows.push_back(children.back()->Render());
             rows.push_back(text("Tab: buttons   Enter: activate   Esc: cancel   PgUp/PgDn: prompt") | dim);
             return window(text(" " + title_ + " "), vbox(std::move(rows)))
-                | size(WIDTH, LESS_THAN, 76) | size(HEIGHT, LESS_THAN, Terminal::Size().dimy - 2) | center | cursor_frame;
+                | size(WIDTH, LESS_THAN, 76) | size(HEIGHT, LESS_THAN, Terminal::Size().dimy - 2) | center;
         });
         auto modal = CatchEvent(renderer, [&](Event event) {
             if (event.is_mouse() && prompt_box.Contain(event.mouse().x, event.mouse().y)) {

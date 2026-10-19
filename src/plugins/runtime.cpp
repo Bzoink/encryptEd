@@ -5,6 +5,7 @@ extern "C" {
 #include "lauxlib.h"
 #include "lualib.h"
 #include "core/utf8.h"
+#include "platform/random.h"
 #include "platform/secure_mem.h"
 }
 
@@ -326,7 +327,13 @@ Result run(const std::string &source, const std::string &name, const Document &d
             !boundary(document.text, document.selection_end) || document.selection_start > document.selection_end)
             throw std::runtime_error("Invalid document cursor or selection.");
         c.document = document;
-        L = lua_newstate(allocate, &c);
+        // Lua 5.5 seeds its string hash from this value; use the platform CSPRNG.
+        uint8_t seed_bytes[sizeof(unsigned)] = {};
+        unsigned seed = 0;
+        if (txx_random_bytes(seed_bytes, sizeof(seed_bytes)) == 0) {
+            std::memcpy(&seed, seed_bytes, sizeof(seed));
+        }
+        L = lua_newstate(allocate, &c, seed);
         if (!L) throw std::runtime_error("Could not allocate Lua runtime.");
         // A C function with no upvalues needs no allocation before protected setup.
         lua_pushcfunction(L, initialize);

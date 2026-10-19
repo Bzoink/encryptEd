@@ -91,13 +91,13 @@ Downloaded compilation dependencies belong in the gitignored `external/` directo
 Repository-owned Lua and modified microz sources remain in `lib/`; MinGW toolchain
 files remain in `lib/fltk/`.
 
-- `lib/lua`: Lua 5.4.9, committed with its MIT license and archive checksum.
+- `lib/lua`: Lua 5.5.1, committed with its MIT license and archive checksum.
   The plugin runtime statically links selected libraries and exposes a restricted API.
 - `lib/microz`: stripped miniz-derived raw DEFLATE support, kept as the compression layer.
   Committed to this repo — it's a modified derivative (ported to C17, archive APIs
   stripped), not a redistributed vendor copy, released under microz's original MIT
   license.
-- `external/monocypher`: Monocypher 4.0.2 for Argon2id and XChaCha20-Poly1305. **Not** committed
+- `external/monocypher`: Monocypher 4.0.3 for Argon2id and XChaCha20-Poly1305. **Not** committed
   — download it from https://monocypher.org/download/ and place `monocypher.c` and
   `monocypher.h` in `external/monocypher/`. CMake fails with instructions if it's missing.
 - FLTK 1.5 (GUI only): **not** committed — build it as a static library and place it at
@@ -105,7 +105,7 @@ files remain in `lib/fltk/`.
   https://www.fltk.org/software.php. Without it, CMake skips the `encryptEd` GUI target but
   still builds the core library, CLI, and tests.
 
-- `external/ftxui`: FTXUI 5.0.0 for the terminal editor. CMake downloads it here
+- `external/ftxui`: FTXUI 7.0.3 for the terminal editor. CMake downloads it here
   when needed, or uses an existing source checkout. Each build keeps separate
   generated FTXUI artifacts in its build directory.
 

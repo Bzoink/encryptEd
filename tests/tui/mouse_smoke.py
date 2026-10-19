@@ -3,6 +3,7 @@ import pathlib
 import re
 import sys
 import tempfile
+import time
 import unicodedata
 sys.dont_write_bytecode = True
 from plugin_smoke import Terminal
@@ -24,11 +25,11 @@ class MouseTerminal(Terminal):
         grid = [[' '] * 120 for _ in range(self.rows)]
         x = y = 0
         saved = (0, 0)
-        for token in re.findall(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b.|[^\x1b]', self.history.decode(errors='replace')):
+        for token in re.findall(r'\x1b\[[0-?]*[ -/]*[@-~]|\x1b[P\]_^][^\x1b\x07]*(?:\x1b\\|\x07)?|\x1b.|[^\x1b]', self.history.decode(errors='replace')):
             if token.startswith('\x1b['):
                 final = token[-1]
                 params = token[2:-1]
-                numbers = [int(n or 0) for n in params.split(';')] if not params.startswith('?') else []
+                numbers = [int(n or 0) for n in params.split(';')] if re.fullmatch(r'[0-9;]*', params) else []
                 first = (numbers[0] or 1) if numbers else 1
                 if final in 'Hf':
                     y = first - 1
@@ -61,12 +62,18 @@ class MouseTerminal(Terminal):
                 x = min(119, x + width)
         return [''.join(row) for row in grid]
 
-    def locate(self, label):
-        for y, line in enumerate(self.lines()):
-            x = line.find(label)
-            if x >= 0:
-                return x, y
-        raise AssertionError('Missing clickable ' + label + '\n' + '\n'.join(self.lines()))
+    def locate(self, label, timeout=3.0):
+        # Nested dialog sessions re-initialize the terminal and may wait for
+        # capability replies before their first frame; poll until it appears.
+        deadline = time.monotonic() + timeout
+        while True:
+            for y, line in enumerate(self.lines()):
+                x = line.find(label)
+                if x >= 0:
+                    return x, y
+            if time.monotonic() >= deadline:
+                raise AssertionError('Missing clickable ' + label + '\n' + '\n'.join(self.lines()))
+            self.pump(0.1)
 
     def click(self, label, offset=1):
         x, y = self.locate(label)
