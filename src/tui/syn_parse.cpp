@@ -565,6 +565,14 @@ static const char *const kKwAsm[] = {
     nullptr,
 };
 
+// JSON: literals only — strings, numbers and punctuation carry the rest.
+static const char *const kKwJson[] = {
+    "false",
+    "null",
+    "true",
+    nullptr,
+};
+
 // ---- Helpers ----------------------------------------------------------------
 
 const char *const *kw_table(SynLang lang) {
@@ -599,6 +607,7 @@ const char *const *kw_table(SynLang lang) {
         case SynLang::Kotlin:      return kKwKotlin;
         case SynLang::Lua:         return kKwLua;
         case SynLang::Asm:         return kKwAsm;
+        case SynLang::JSON:        return kKwJson;
         default:                   return nullptr;
     }
 }
@@ -675,6 +684,7 @@ SynLang syn_detect(const std::string &filename) {
     if (ext == "php" || ext == "php3" || ext == "php4" ||
         ext == "php5" || ext == "php7" || ext == "php8")        return SynLang::PHP;
     if (ext == "sql")                                            return SynLang::SQL;
+    if (ext == "json")                                           return SynLang::JSON;
     if (ext == "yaml" || ext == "yml")                          return SynLang::YAML;
     if (ext == "xml" || ext == "svg" || ext == "xsd")           return SynLang::XML;
     if (ext == "java")                                           return SynLang::Java;
@@ -993,6 +1003,18 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
                 while (j < n && (is_digit(static_cast<unsigned char>(s[j])) ||
                                   s[j] == '.' || s[j] == '_'))
                     ++j;
+                // Exponent: 1e10, 1.5E-3 (JSON numbers and most languages).
+                if (j < n && (s[j] == 'e' || s[j] == 'E')) {
+                    std::size_t k = j + 1;
+                    if (k < n && (s[k] == '+' || s[k] == '-')) ++k;
+                    if (k < n && is_digit(static_cast<unsigned char>(s[k]))) {
+                        ++k;
+                        while (k < n && (is_digit(static_cast<unsigned char>(s[k])) ||
+                                          s[k] == '_'))
+                            ++k;
+                        j = k;
+                    }
+                }
             }
             push_run(runs, i, j, SynStyle::Number);
             i = j;

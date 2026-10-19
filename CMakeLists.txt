@@ -580,6 +580,14 @@ encrypted_make_windows_self_contained(tui_edit_buffer_tests)
 encrypted_apply_hardening(tui_edit_buffer_tests)
 add_test(NAME tui_edit_buffer_tests COMMAND tui_edit_buffer_tests)
 
+add_executable(tui_syn_parse_tests
+    tests/tui/syn_parse_tests.cpp
+)
+target_link_libraries(tui_syn_parse_tests PRIVATE etui_core)
+encrypted_make_windows_self_contained(tui_syn_parse_tests)
+encrypted_apply_hardening(tui_syn_parse_tests)
+add_test(NAME tui_syn_parse_tests COMMAND tui_syn_parse_tests)
+
 add_executable(tui_plugin_tests tests/tui/plugin_tests.cpp)
 target_link_libraries(tui_plugin_tests PRIVATE etui_core encrypted_plugins)
 encrypted_make_windows_self_contained(tui_plugin_tests -static-libstdc++)
