@@ -43,8 +43,10 @@ extern "C" {
 #include "tui/edit_buffer.h"
 #include "tui/md_parse.h"
 #include "tui/syn_parse.h"
+#include "tui/theme.h"
 
 using namespace ftxui;
+using namespace tui_theme;
 
 namespace {
 
@@ -86,6 +88,7 @@ public:
     explicit EditorApp(App *screen, std::string open_path, std::string piped_text = "")
         : screen_(screen), pending_open_(std::move(open_path)) {
         config_load(settings_);
+        theme_ = make_theme(settings_.theme);
         buffer_.set_text("");
         build_menus();
         set_status("New document");
@@ -143,6 +146,7 @@ public:
         Element top    = render_menu_bar();
         Element bottom = render_status();
         Element base   = vbox({top, editor, bottom});
+        if (!theme_.inverted_chrome) base = base | color(theme_.fg) | bgcolor(theme_.bg);
 
         if (menu_open_ >= 0)
             base = dbox({base, render_menu_overlay()});
@@ -286,6 +290,18 @@ private:
         se.push_back({"Status: Readable Size", "", [this]{
             settings_.status_count = AppSettings::STATUS_COUNT_SIZE; config_save(settings_);
         }, {}, [this]{ return settings_.status_count == AppSettings::STATUS_COUNT_SIZE; }});
+        se.push_back({});
+        // ---- Theme submenu -------------------------------------------------
+        std::vector<MenuEntry> themes;
+        for (int i = 0; i < static_cast<int>(AppSettings::ThemeId::Count); ++i) {
+            const auto id = static_cast<AppSettings::ThemeId>(i);
+            themes.push_back({theme_label(id), "", [this, id]{
+                settings_.theme = id;
+                theme_ = make_theme(id);
+                config_save(settings_);
+            }, {}, [this, id]{ return settings_.theme == id; }});
+        }
+        se.push_back({"Theme", "", nullptr, std::move(themes)});
         menus_.push_back({"Settings", std::move(se)});
 
         // ---- Help ----------------------------------------------------------
@@ -297,28 +313,50 @@ private:
     // ---- Rendering ---------------------------------------------------------
     Color style_color(MdStyle s) const {
         switch (s) {
-            case MdStyle::Heading:    return Color::CyanLight;
+            case MdStyle::Heading:    return theme_.heading;
             case MdStyle::CodeBlock:
-            case MdStyle::InlineCode: return Color::GreenLight;
-            case MdStyle::Strong:     return Color::YellowLight;
-            case MdStyle::Emphasis:   return Color::Yellow;
-            case MdStyle::Quote:      return Color::GrayLight;
-            case MdStyle::ListMarker: return Color::RedLight;
-            case MdStyle::Link:       return Color::BlueLight;
-            case MdStyle::Rule:       return Color::GrayDark;
-            default:                  return Color::White;
+            case MdStyle::InlineCode: return theme_.code;
+            case MdStyle::Strong:     return theme_.strong;
+            case MdStyle::Emphasis:   return theme_.emphasis;
+            case MdStyle::Quote:      return theme_.quote;
+            case MdStyle::ListMarker: return theme_.list_marker;
+            case MdStyle::Link:       return theme_.link;
+            case MdStyle::Rule:       return theme_.rule;
+            default:                  return theme_.fg;
         }
     }
 
     Color syn_color(SynStyle s) const {
         switch (s) {
-            case SynStyle::Keyword: return Color::CyanLight;
-            case SynStyle::String:  return Color::YellowLight;
-            case SynStyle::Comment: return Color::GrayDark;
-            case SynStyle::Number:  return Color::RedLight;
-            case SynStyle::Preproc: return Color::GreenLight;
-            default:                return Color::White;
+            case SynStyle::Keyword: return theme_.keyword;
+            case SynStyle::String:  return theme_.string;
+            case SynStyle::Comment: return theme_.comment;
+            case SynStyle::Number:  return theme_.number;
+            case SynStyle::Preproc: return theme_.preproc;
+            default:                return theme_.fg;
         }
+    }
+
+    // Chrome styles: named themes paint explicit foreground/background pairs,
+    // the terminal-default theme keeps the terminal's own inverted colours.
+    Element chrome_style(Element e) const {
+        if (theme_.inverted_chrome) return e | inverted;
+        return e | color(theme_.chrome_fg) | bgcolor(theme_.chrome_bg);
+    }
+
+    Element highlight_style(Element e) const {
+        if (theme_.inverted_chrome) return e | inverted;
+        return e | color(theme_.highlight_fg) | bgcolor(theme_.highlight_bg);
+    }
+
+    Element selection_style(Element e) const {
+        if (theme_.inverted_chrome) return e | inverted;
+        return e | color(theme_.selection_fg) | bgcolor(theme_.selection_bg);
+    }
+
+    Element cursor_style(Element e) const {
+        if (theme_.inverted_chrome) return e | inverted;
+        return e | color(theme_.cursor_fg) | bgcolor(theme_.cursor_bg);
     }
 
     Element render_menu_bar() {
@@ -332,12 +370,12 @@ private:
                 text(title.substr(0, 1)) | underlined,
                 text(title.substr(1) + " "),
             });
-            if (i == menu_open_) t = t | inverted;
+            if (i == menu_open_) t = highlight_style(t);
             t = t | reflect(menus_[i].title_box);
             parts.push_back(t);
         }
         parts.push_back(filler());
-        return hbox(std::move(parts)) | inverted;
+        return chrome_style(hbox(std::move(parts)));
     }
 
     // Minimum inner content width for a list of items.
@@ -386,7 +424,7 @@ private:
                     row = hbox({text("  " + e.label), filler()}) | size(WIDTH, EQUAL, inner_w);
                 }
             }
-            if (i == sel) row = row | inverted;
+            if (i == sel) row = highlight_style(row);
             rows.push_back(row);
         }
         return rows;
@@ -410,7 +448,7 @@ private:
 
         int main_sel = menu_item_;
         auto rows = build_rows(items, main_sel, iw);
-        Element dd = window(text(""), vbox(std::move(rows))) | clear_under;
+        Element dd = chrome_style(window(text(""), vbox(std::move(rows)))) | clear_under;
 
         Element overlay = place_at(ddx, 1, dd);
 
@@ -422,7 +460,7 @@ private:
             int siw  = items_inner_width(sub_items);
             int sub_sel = menu_in_sub_ ? menu_sub_ : -1;
             auto sub_rows = build_rows(sub_items, sub_sel, siw);
-            Element sub_dd = window(text(""), vbox(std::move(sub_rows))) | clear_under;
+            Element sub_dd = chrome_style(window(text(""), vbox(std::move(sub_rows)))) | clear_under;
             // x: right edge of main dropdown; y: aligned with triggering item row
             int sub_x = ddx + ddw;
             int sub_y = 1 + menu_item_;   // 1 = menu bar; menu_item_ = rows from top border
@@ -502,7 +540,7 @@ private:
                 if (a >= b) return;
                 Element e = text(ln.substr(a, b - a));
                 if (seg.has_col) e = e | color(seg.col);
-                if (is_cur) e = e | inverted | focusCursorBarBlinking;
+                if (is_cur) e = cursor_style(e) | focusCursorBarBlinking;
                 out.push_back(std::move(e));
             };
             if (!show_cursor || cur_b < seg.a || cur_b >= seg.b) {
@@ -515,7 +553,7 @@ private:
         }
         // Cursor past end of line: trailing inverted space (when in view).
         if (show_cursor && cur_clen == 0 && cell_at(ln, ln.size()) < scroll_left_ + cols)
-            out.push_back(text(" ") | inverted | focusCursorBarBlinking);
+            out.push_back(cursor_style(text(" ")) | focusCursorBarBlinking);
 
         // A double-width glyph straddling the left edge leaves a one-cell gap.
         const int pad = cell_at(ln, v0) - scroll_left_;
@@ -536,7 +574,7 @@ private:
         std::string mid = b_to > b_from ? ln.substr(b_from, b_to - b_from) : std::string();
         const int sel_cell = cell_at(ln, byte_at(ln, from)) - scroll_left_;
         if (mid.empty() && from == to && sel_cell >= 0 && sel_cell < cols) mid = " ";
-        if (!mid.empty()) spans.push_back(text(mid) | inverted);
+        if (!mid.empty()) spans.push_back(selection_style(text(mid)));
         if (b_to < v1) spans.push_back(text(ln.substr(b_to, v1 - b_to)));
         return hbox(std::move(spans));
     }
@@ -566,7 +604,7 @@ private:
                             "  Ln " + std::to_string(c.line + 1) +
                             ", Col " + std::to_string(c.col + 1) +
                             "  " + (buffer_.overwrite() ? "OVR" : "INS") + " ";
-        return hbox({text(" " + status_msg_), filler(), text(right)}) | inverted;
+        return chrome_style(hbox({text(" " + status_msg_), filler(), text(right)}));
     }
 
     Element render_dialog() {
@@ -596,7 +634,7 @@ private:
                 after.assign(Utf8ToGlyphs(after).size(), '*');
             }
             auto marker = text(after.empty() ? " " : after.substr(0, utf8_next(after, 0)));
-            if (dialog_btn_ == -1) marker = marker | inverted | focusCursorBarBlinking;
+            if (dialog_btn_ == -1) marker = highlight_style(marker) | focusCursorBarBlinking;
             rows.push_back(hbox({text("  > "), text(before), marker,
                 text(after.empty() ? "" : after.substr(utf8_next(after, 0))), filler()})
                 | size(WIDTH, EQUAL, inner_w) | reflect(dialog_input_box_));
@@ -624,9 +662,9 @@ private:
 
         rows.push_back(text(""));  // bottom padding
 
-        Element dlg = window(text(" " + dialog_title_ + " "), vbox(std::move(rows)))
+        Element dlg = chrome_style(window(text(" " + dialog_title_ + " "), vbox(std::move(rows)))
                     | clear_under
-                    | size(WIDTH, EQUAL, dw);
+                    | size(WIDTH, EQUAL, dw));
 
         int dh = 9 + (!dialog_body_.empty() && dialog_kind_ == DialogKind::Prompt ? 2 : 0);
         int dx = std::max(0, (dim.dimx - dw) / 2);
@@ -774,8 +812,8 @@ private:
                 std::string label = (e.name == "..")        ? ".."
                                   : (e.is_dir ? e.name + "/" : e.name);
                 Element row = text("  " + label) | size(WIDTH, EQUAL, inner_w);
-                if (e.is_dir) row = row | color(Color::CyanLight);
-                if (idx == picker_sel_ && list_focused) row = row | inverted;
+                if (e.is_dir) row = row | color(theme_.accent);
+                if (idx == picker_sel_ && list_focused) row = highlight_style(row);
                 rows.push_back(row | reflect(picker_row_boxes_[i]));
             }
         }
@@ -797,11 +835,11 @@ private:
                     name_cells.push_back(text(save_name_.substr(0, cur)));
                 if (csz > 0) {
                     name_cells.push_back(
-                        text(save_name_.substr(cur, csz)) | inverted | focusCursorBarBlinking);
+                        cursor_style(text(save_name_.substr(cur, csz))) | focusCursorBarBlinking);
                     if (cur + csz < save_name_.size())
                         name_cells.push_back(text(save_name_.substr(cur + csz)));
                 } else {
-                    name_cells.push_back(text(" ") | inverted | focusCursorBarBlinking);
+                    name_cells.push_back(cursor_style(text(" ")) | focusCursorBarBlinking);
                 }
             } else {
                 name_cells.push_back(text(save_name_));
@@ -817,7 +855,7 @@ private:
             Element cb = hbox({text(" "),
                               CheckboxOption::Simple().transform(cbstate), filler()})
                        | size(WIDTH, EQUAL, inner_w);
-            if (save_focus_ == FOCUS_ENC) cb = cb | inverted;
+            if (save_focus_ == FOCUS_ENC) cb = highlight_style(cb);
             rows.push_back(cb | reflect(picker_enc_box_));
 
             rows.push_back(separator());
@@ -839,9 +877,9 @@ private:
             text("  "), button(save ? "Save" : "Open", FOCUS_ACTION, picker_action_box_),
             text("  "), button("Cancel", FOCUS_CANCEL, picker_cancel_box_), filler()}));
 
-        Element dlg = window(text(save ? " Save File " : " Open File "),
+        Element dlg = chrome_style(window(text(save ? " Save File " : " Open File "),
                              vbox(std::move(rows)))
-                    | clear_under | size(WIDTH, EQUAL, dw);
+                    | clear_under | size(WIDTH, EQUAL, dw));
 
         int dh = view_h + 10 + (save ? 3 : 0);  // +name +checkbox +separator
         int dx = std::max(0, (dim.dimx - dw) / 2);
@@ -1487,7 +1525,7 @@ private:
     }
 
     void show_alert(std::string title, std::string body) {
-        TuiPluginDialogs dialogs(std::move(title));
+        TuiPluginDialogs dialogs(std::move(title), theme_);
         plugins::DialogRequest request{};
         request.kind = plugins::DialogKind::Message;
         request.prompt = std::move(body);
@@ -1636,7 +1674,7 @@ private:
     }
 
     void plugin_message(const std::string &message) {
-        TuiPluginDialogs dialogs("Plugins");
+        TuiPluginDialogs dialogs("Plugins", theme_);
         plugins::DialogRequest request{};
         request.kind = plugins::DialogKind::Message; request.prompt = message;
         dialogs.show(request);
@@ -1678,7 +1716,7 @@ private:
             if (!path.empty()) request.choices.push_back(".. (Back)");
             for (const auto &entry : entries) request.choices.push_back(entry.label);
             if (request.choices.empty()) return;
-            TuiPluginDialogs dialogs("Plugins");
+            TuiPluginDialogs dialogs("Plugins", theme_);
             auto reply = dialogs.show(request);
             if (!reply.accepted) return;
             if (!path.empty() && reply.choice == 1) { path.pop_back(); continue; }
@@ -1703,7 +1741,7 @@ private:
         auto document = plugin_document(buffer_);
         document.indent_width = settings_.indent_width;
         document.indent_spaces = settings_.use_spaces();
-        TuiPluginDialogs dialogs("Plugin: " + command.label);
+        TuiPluginDialogs dialogs("Plugin: " + command.label, theme_);
         plugin_running_ = true;
         auto result = plugins::run(source, "@" + command.path.filename().u8string(), document, dialogs);
         plugin_running_ = false;
@@ -1916,7 +1954,7 @@ private:
                             if (!ok) return;
                             try { buffer_.goto_line(std::stoi(v)); } catch (...){} }); }
     void cmd_about() {
-        TuiPluginDialogs dialogs("About etui");
+        TuiPluginDialogs dialogs("About etui", theme_);
         plugins::DialogRequest request{};
         request.kind = plugins::DialogKind::Message;
         request.prompt = about_text("etui - EncryptEd terminal editor",
@@ -2026,14 +2064,14 @@ private:
         auto container = Container::Vertical({query, replacement, navigation, actions});
         query->TakeFocus();
         search_panel_ = Renderer(container, [this, query, replacement, navigation, actions] {
-            return window(text(" Find / Replace "), vbox({
+            return chrome_style(window(text(" Find / Replace "), vbox({
                 hbox({text("Find:         "), query->Render() | flex}),
                 hbox({text("Replace with: "), replacement->Render() | flex}),
                 separator(), navigation->Render(), actions->Render(), separator(),
                 paragraph(status_msg_) | size(HEIGHT, LESS_THAN, 2),
                 text("Case-sensitive literal search; searches wrap"),
                 text("F3: next  F2: previous  Tab: controls  Esc: close") | dim
-            })) | clear_under | size(WIDTH, LESS_THAN, std::min(76, Terminal::Size().dimx - 2)) | center;
+            })) | clear_under | size(WIDTH, LESS_THAN, std::min(76, Terminal::Size().dimx - 2)) | center);
         });
     }
 
@@ -2150,6 +2188,7 @@ private:
 
     // ---- State -------------------------------------------------------------
     App *screen_;
+    Theme theme_;
     EditBuffer         buffer_;
     bool plugin_running_ = false;
     plugins::Catalog plugin_catalog_;

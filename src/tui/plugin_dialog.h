@@ -2,6 +2,7 @@
 #define TUI_PLUGIN_DIALOG_H
 
 #include "plugins/plugins.h"
+#include "tui/theme.h"
 #include <algorithm>
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
@@ -15,7 +16,25 @@ extern "C" {
 // Nested FTXUI loops suspend the editor while Lua synchronously awaits a reply.
 class TuiPluginDialogs : public plugins::DialogHost {
 public:
-    explicit TuiPluginDialogs(std::string title) : title_(std::move(title)) {}
+    TuiPluginDialogs(std::string title, tui_theme::Theme theme)
+        : title_(std::move(title)), theme_(std::move(theme)) {}
+
+    // Buttons follow the editor theme; the terminal-default theme keeps
+    // FTXUI's own inverted focus style.
+    ftxui::ButtonOption button_option() const {
+        auto option = ftxui::ButtonOption::Simple();
+        if (theme_.inverted_chrome) return option;
+        const tui_theme::Theme theme = theme_;
+        option.transform = [theme](const ftxui::EntryState &s) {
+            using namespace ftxui;
+            Element e = text(s.label) | borderLight;
+            if (s.focused) e = e | color(theme.highlight_fg) | bgcolor(theme.highlight_bg);
+            else           e = e | color(theme.chrome_fg) | bgcolor(theme.chrome_bg);
+            return e;
+        };
+        return option;
+    }
+
     plugins::DialogReply show(const plugins::DialogRequest &request) override {
         using namespace ftxui;
         auto screen = ScreenInteractive::Fullscreen();
@@ -25,19 +44,19 @@ public:
         float prompt_scroll = 0;
         bool prompt_overflows = false;
         Box prompt_box{};
-        auto scroll_up = Button("Scroll Up", [&] { prompt_scroll = std::max(0.0f, prompt_scroll - 0.2f); }, ButtonOption::Simple());
-        auto scroll_down = Button("Scroll Down", [&] { prompt_scroll = std::min(1.0f, prompt_scroll + 0.2f); }, ButtonOption::Simple());
+        auto scroll_up = Button("Scroll Up", [&] { prompt_scroll = std::max(0.0f, prompt_scroll - 0.2f); }, button_option());
+        auto scroll_down = Button("Scroll Down", [&] { prompt_scroll = std::min(1.0f, prompt_scroll + 0.2f); }, button_option());
         auto scroll_buttons = Maybe(Container::Horizontal({scroll_up, scroll_down}), &prompt_overflows);
         auto accept = [&] {
             reply.accepted = true; reply.text = value;
             reply.choice = selected + 1; reply.confirmed = true; screen.Exit();
         };
         auto cancel = [&] { screen.Exit(); };
-        auto ok = Button(request.kind == plugins::DialogKind::Confirm ? "Yes" : "OK", accept, ButtonOption::Simple());
+        auto ok = Button(request.kind == plugins::DialogKind::Confirm ? "Yes" : "OK", accept, button_option());
         auto no = Button(request.kind == plugins::DialogKind::Confirm ? "No" : "Cancel", [&] {
             if (request.kind == plugins::DialogKind::Confirm) reply.accepted = true;
             cancel();
-        }, ButtonOption::Simple());
+        }, button_option());
         Component field;
         if (request.kind == plugins::DialogKind::Input) {
             auto option = InputOption::Default();
@@ -47,6 +66,15 @@ public:
         } else if (request.kind == plugins::DialogKind::Choose) {
             auto option = MenuOption::Vertical();
             option.on_enter = accept;
+            if (!theme_.inverted_chrome) {
+                const tui_theme::Theme theme = theme_;
+                option.entries_option.transform = [theme](const EntryState &s) {
+                    Element e = text(s.label);
+                    if (s.focused) e = e | color(theme.highlight_fg) | bgcolor(theme.highlight_bg);
+                    else           e = e | color(theme.chrome_fg) | bgcolor(theme.chrome_bg);
+                    return e;
+                };
+            }
             field = Menu(&request.choices, &selected, option);
         }
         Components children{scroll_buttons};
@@ -89,8 +117,12 @@ public:
             }
             rows.push_back(children.back()->Render());
             rows.push_back(text("Tab: buttons   Enter: activate   Esc: cancel   PgUp/PgDn: prompt") | dim);
-            return window(text(" " + title_ + " "), vbox(std::move(rows)))
+            Element dlg = window(text(" " + title_ + " "), vbox(std::move(rows)))
                 | size(WIDTH, LESS_THAN, 76) | size(HEIGHT, LESS_THAN, Terminal::Size().dimy - 2) | center;
+            if (theme_.inverted_chrome) return dlg;
+            // Theme the dialog and fill the rest of the screen with its background.
+            return dbox({filler() | bgcolor(theme_.bg),
+                         dlg | color(theme_.chrome_fg) | bgcolor(theme_.chrome_bg)});
         });
         auto modal = CatchEvent(renderer, [&](Event event) {
             if (event.is_mouse() && prompt_box.Contain(event.mouse().x, event.mouse().y)) {
@@ -112,5 +144,6 @@ public:
     }
 private:
     std::string title_;
+    tui_theme::Theme theme_;
 };
 #endif

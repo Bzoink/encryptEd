@@ -95,6 +95,14 @@ Long lines scroll horizontally instead of wrapping: the view follows the cursor,
 it a few columns. A position bar appears in the status line while a visible line is
 wider than the window.
 
+Colours come from a theme, chosen in **Settings → Theme**: terminal default,
+Dracula, Nord, Gruvbox Dark and Light, Solarized Dark and Light, Tokyo Night,
+Catppuccin Mocha and Latte, One Dark, and Kanagawa. Named themes paint the whole
+interface — menu bar, status line, selections, cursor and screen background — in
+24-bit colour, which FTXUI downgrades to the terminal's own palette when it does
+not support truecolor. The choice is stored as `theme=<name>` in the config file;
+**Terminal** keeps the terminal's colours and leaves the background alone.
+
 ## Text Plugins
 
 The GUI and `etui` support restricted Lua plugins for editing the active document and asking

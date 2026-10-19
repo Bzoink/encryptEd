@@ -588,6 +588,14 @@ encrypted_make_windows_self_contained(tui_syn_parse_tests)
 encrypted_apply_hardening(tui_syn_parse_tests)
 add_test(NAME tui_syn_parse_tests COMMAND tui_syn_parse_tests)
 
+add_executable(tui_config_tests
+    tests/tui/config_tests.cpp
+)
+target_link_libraries(tui_config_tests PRIVATE etui_core)
+encrypted_make_windows_self_contained(tui_config_tests)
+encrypted_apply_hardening(tui_config_tests)
+add_test(NAME tui_config_tests COMMAND tui_config_tests)
+
 add_executable(tui_plugin_tests tests/tui/plugin_tests.cpp)
 target_link_libraries(tui_plugin_tests PRIVATE etui_core encrypted_plugins)
 encrypted_make_windows_self_contained(tui_plugin_tests -static-libstdc++)
@@ -616,6 +624,10 @@ if(TARGET etui AND UNIX AND NOT CMAKE_CROSSCOMPILING)
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/stdin_smoke.py
                 $<TARGET_FILE:etui>)
         set_tests_properties(tui_stdin_smoke PROPERTIES TIMEOUT 120)
+        add_test(NAME tui_theme_smoke
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/theme_smoke.py
+                $<TARGET_FILE:etui>)
+        set_tests_properties(tui_theme_smoke PROPERTIES TIMEOUT 120)
     endif()
 endif()
 
