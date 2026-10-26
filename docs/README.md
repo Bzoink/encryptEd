@@ -41,9 +41,9 @@ The codebase has two layers.
 | Library | Location | License | Use |
 |---|---|---|---|
 | FLTK 1.5 | `external/fltk/1_5/` | FLTK (LGPL + exceptions) | GUI |
-| Monocypher 4.0.2 | `external/monocypher/` | BSD 2-Clause / CC0 | Crypto and KDF |
+| Monocypher 4.0.3 | `external/sources/monocypher-4.0.3/` | BSD 2-Clause / CC0 | Crypto and KDF |
 | microz | `lib/microz/` | MIT (miniz-derived) | DEFLATE compression |
-| FTXUI 5.0.0 | `external/ftxui/` (downloaded if missing) | MIT | Terminal UI (`etui`) |
+| FTXUI 7.0.3 | `external/sources/ftxui-7.0.3/` (downloaded if missing) | MIT | Terminal UI (`etui`) |
 
 FLTK and Monocypher are pristine upstream code and are not committed to this repository —
 see the top-level `README.md` for how to obtain them.
@@ -132,8 +132,9 @@ docs/
   txx-format.md      — binary format specification
 external/             — downloaded compilation dependencies (gitignored)
   fltk/1_5/          — FLTK 1.5 sources and platform installations
-  monocypher/        — crypto library
-  ftxui/             — terminal UI library
+  sources/           — versioned upstream sources (gitignored)
+    monocypher-4.0.3/ — crypto library
+    ftxui-7.0.3/      — terminal UI library
 lib/
   fltk/              — MinGW toolchain files
   lua/               — committed Lua runtime sources

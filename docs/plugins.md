@@ -122,12 +122,12 @@ single-line and support normal cursor editing. Confirmation dialogs initially
 focus **No**; accepting No returns `false`, while **Escape** cancels the whole run.
 Escape also cancels message dialogs. While dialogs are open, the editor is suspended.
 **Alt+Z** or **Edit → Undo** undoes a plugin change; **Ctrl+Y** or **Alt+Y** redoes it.
-FTXUI 5 discards Ctrl+Z, so use Alt+Z in the terminal editor. Position-only commands and
-no-op transformations do not mark the document modified or add undo steps.
+In etui, Ctrl+Z is also an undo shortcut. Position-only commands and no-op
+transformations do not mark the document modified or add undo steps.
 
 ## Text and positions
 
-Scripts use Lua 5.4 and `editor.api_version == 1`. Call API functions with a dot,
+Scripts use Lua 5.5 and `editor.api_version == 1`. Call API functions with a dot,
 as in `editor.text()`, not a colon. There is no persistent state between runs.
 
 All editing positions are **1-based UTF-8 byte positions**, including the cursor.

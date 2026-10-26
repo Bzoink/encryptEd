@@ -153,7 +153,7 @@ def main():
             terminal.send('\r')
             for detail in ['About etui', 'etui - EncryptEd terminal editor', 'Version: 1.2',
                            'Author: Tony Mattsson', 'GPLv3', 'FTXUI 7.0.3',
-                           'Lua 5.5.1', 'Monocypher 4.0.3', 'microz (unversioned']:
+                           'Lua 5.5.1', 'Monocypher 4.0.3', 'microz 1.0']:
                 terminal.wait(detail)
             terminal.send('\r')
             terminal.save(document, 'é original')

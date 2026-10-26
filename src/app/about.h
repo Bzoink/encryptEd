@@ -27,7 +27,7 @@ inline std::string about_text(const std::string &program, const std::string &ui_
         "\n\nDependencies:\n" + ui_dependency +
         "\nLua " ENCRYPTED_LUA_VERSION " - MIT (plugin runtime)"
         "\nMonocypher " ENCRYPTED_MONOCYPHER_VERSION " - BSD-2-Clause / CC0 (cryptography)"
-        "\nmicroz (unversioned repository variant) - MIT (miniz-derived compression)"
+        "\nmicroz 1.0 - MIT (compression)"
         "\n\nCompression: raw DEFLATE"
         "\nEncryption: XChaCha20-Poly1305"
         "\nKey derivation: Argon2id";

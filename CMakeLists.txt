@@ -92,16 +92,16 @@ target_include_directories(microz PUBLIC
 )
 
 encrypted_require_vendored_path(
-    "${CMAKE_CURRENT_SOURCE_DIR}/external/monocypher/monocypher.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/external/sources/monocypher-4.0.3/src/monocypher.c"
     "Monocypher"
-    "  Download Monocypher 4.0.3 from https://monocypher.org/download/ and copy\n    monocypher.c and monocypher.h into external/monocypher/."
+    "  Download Monocypher 4.0.3 from https://monocypher.org/download/ and extract it\n    into external/sources/monocypher-4.0.3/ (use the files in its src/ directory)."
 )
 
 add_library(monocypher STATIC
-    external/monocypher/monocypher.c
+    external/sources/monocypher-4.0.3/src/monocypher.c
 )
 target_include_directories(monocypher PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/monocypher
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/sources/monocypher-4.0.3/src
 )
 
 add_library(encrypted_core STATIC
@@ -160,7 +160,7 @@ endif()
 # About dialogs report dependency versions from their source metadata.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/lib/lua/src/lua.h"
-    "${CMAKE_CURRENT_SOURCE_DIR}/external/monocypher/monocypher.h")
+    "${CMAKE_CURRENT_SOURCE_DIR}/external/sources/monocypher-4.0.3/src/monocypher.h")
 file(STRINGS lib/lua/src/lua.h _lua_version_lines
     REGEX "^#define LUA_VERSION_(MAJOR|MINOR|RELEASE)_N[ \t]+[0-9]+")
 foreach(_line IN LISTS _lua_version_lines)
@@ -169,7 +169,7 @@ foreach(_line IN LISTS _lua_version_lines)
     endif()
 endforeach()
 set(ENCRYPTED_LUA_VERSION "${_lua_MAJOR}.${_lua_MINOR}.${_lua_RELEASE}")
-file(STRINGS external/monocypher/monocypher.h _monocypher_version_line
+file(STRINGS external/sources/monocypher-4.0.3/src/monocypher.h _monocypher_version_line
     LIMIT_COUNT 1 REGEX "^// Monocypher version ")
 string(REGEX REPLACE "^// Monocypher version " "" ENCRYPTED_MONOCYPHER_VERSION
     "${_monocypher_version_line}")
@@ -437,11 +437,11 @@ if(ENCRYPTED_BUILD_TUI)
         set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
         set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
         set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ftxui/CMakeLists.txt")
-            add_subdirectory(external/ftxui ${CMAKE_CURRENT_BINARY_DIR}/_deps/ftxui-build)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/sources/ftxui-7.0.3/CMakeLists.txt")
+            add_subdirectory(external/sources/ftxui-7.0.3 ${CMAKE_CURRENT_BINARY_DIR}/_deps/ftxui-build)
         else()
             FetchContent_Declare(ftxui
-                SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/ftxui"
+                SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/sources/ftxui-7.0.3"
                 GIT_REPOSITORY https://github.com/ArthurSonzogni/FTXUI.git
                 GIT_TAG v7.0.3
             )
@@ -455,8 +455,8 @@ if(ENCRYPTED_BUILD_TUI)
             set(ENCRYPTED_FTXUI_VERSION "${ftxui_VERSION}")
         elseif(NOT ftxui_FOUND)
             set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-                "${CMAKE_CURRENT_SOURCE_DIR}/external/ftxui/CMakeLists.txt")
-            file(STRINGS external/ftxui/CMakeLists.txt _ftxui_version_line
+                "${CMAKE_CURRENT_SOURCE_DIR}/external/sources/ftxui-7.0.3/CMakeLists.txt")
+            file(STRINGS external/sources/ftxui-7.0.3/CMakeLists.txt _ftxui_version_line
                 LIMIT_COUNT 1 REGEX "^[ \t]+VERSION [0-9]+\\.[0-9]+\\.[0-9]+")
             string(REGEX REPLACE "^[ \t]+VERSION " "" ENCRYPTED_FTXUI_VERSION "${_ftxui_version_line}")
         endif()
@@ -635,7 +635,9 @@ set(CPACK_PACKAGE_NAME "encryptEd")
 set(CPACK_PACKAGE_VENDOR "${ENCRYPTED_APP_AUTHOR}")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Encrypted UTF-8 text editor")
 set(CPACK_PACKAGE_VERSION ${ENCRYPTED_APP_VERSION})
+set(CPACK_PACKAGE_CONTACT "${ENCRYPTED_APP_AUTHOR} <98236418+Bzoink@users.noreply.github.com>")
 set(CPACK_RESOURCE_FILE_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+set(CPACK_DEBIAN_PACKAGE_SHLIBDEPS ON)
 if(TARGET encryptEd)
     set(CPACK_PACKAGE_EXECUTABLES "encryptEd" "${ENCRYPTED_WINDOWS_DISPLAY_NAME}")
 endif()

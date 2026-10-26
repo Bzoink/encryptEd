@@ -124,16 +124,17 @@ files remain in `lib/fltk/`.
   Committed to this repo — it's a modified derivative (ported to C17, archive APIs
   stripped), not a redistributed vendor copy, released under microz's original MIT
   license.
-- `external/monocypher`: Monocypher 4.0.3 for Argon2id and XChaCha20-Poly1305. **Not** committed
-  — download it from https://monocypher.org/download/ and place `monocypher.c` and
-  `monocypher.h` in `external/monocypher/`. CMake fails with instructions if it's missing.
+- `external/sources/monocypher-4.0.3`: Monocypher 4.0.3 for Argon2id and
+  XChaCha20-Poly1305. **Not** committed — download it from
+  https://monocypher.org/download/ and extract it there; CMake uses its `src/`
+  directory. CMake fails with instructions if it's missing.
 - FLTK 1.5 (GUI only): **not** committed — build it as a static library and place it at
   `external/fltk/1_5/fltk-linux/` (or `fltk-win64/`/`fltk-win32/` for Windows cross-builds); see
   https://www.fltk.org/software.php. Without it, CMake skips the `encryptEd` GUI target but
   still builds the core library, CLI, and tests.
 
-- `external/ftxui`: FTXUI 7.0.3 for the terminal editor. CMake downloads it here
-  when needed, or uses an existing source checkout. Each build keeps separate
+- `external/sources/ftxui-7.0.3`: FTXUI 7.0.3 for the terminal editor. CMake downloads
+  it here when needed, or uses an existing source checkout. Each build keeps separate
   generated FTXUI artifacts in its build directory.
 
 ## Navigation
