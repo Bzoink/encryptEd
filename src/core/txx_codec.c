@@ -72,6 +72,9 @@ txx_status txx_encode_text(const uint8_t *plaintext,
     if ((plaintext == NULL && plaintext_len != 0) || password == NULL || encoded == NULL) {
         return TXX_ERR_ARG;
     }
+    if (password[0] == '\0') {
+        return TXX_ERR_EMPTY_PASSWORD;
+    }
     if (plaintext_len > UINT64_MAX || plaintext_len > (size_t)TXX_MAX_TEXT_BYTES) {
         return TXX_ERR_OVERFLOW;
     }
@@ -90,7 +93,7 @@ txx_status txx_encode_text(const uint8_t *plaintext,
         options = &local_options;
     }
     if (options->kdf.memory_blocks > TXX_MAX_KDF_MEMORY_BLOCKS ||
-        options->kdf.memory_blocks < TXX_MIN_KDF_MEMORY_BLOCKS ||
+        options->kdf.memory_blocks < TXX_DECODE_MIN_KDF_MEMORY_BLOCKS ||
         options->kdf.passes < TXX_MIN_KDF_PASSES ||
         options->kdf.passes > TXX_MAX_KDF_PASSES ||
         options->kdf.lanes < 1U ||
@@ -182,6 +185,9 @@ txx_status txx_decode_text(const uint8_t *encoded,
 
     if ((encoded == NULL && encoded_len != 0) || password == NULL || plaintext == NULL) {
         return TXX_ERR_ARG;
+    }
+    if (password[0] == '\0') {
+        return TXX_ERR_EMPTY_PASSWORD;
     }
     if (encoded_len < TXX_HEADER_SIZE) {
         return TXX_ERR_FORMAT;

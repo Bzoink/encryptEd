@@ -24,9 +24,37 @@ static void test_options(txx_codec_options *options)
     txx_codec_default_options(options);
     options->compression_threshold = 64U;
     options->compression_min_savings = 1U;
-    options->kdf.memory_blocks = 256U;
+    options->kdf.memory_blocks = TXX_DECODE_MIN_KDF_MEMORY_BLOCKS;
     options->kdf.passes = 2U;
     options->kdf.lanes = 1U;
+}
+
+static void test_repeat_empty_password(void)
+{
+    txx_codec_options options;
+    txx_buffer encoded;
+    txx_buffer decoded;
+    const char *text = "secret";
+
+    test_options(&options);
+    CHECK(txx_encode_text((const uint8_t *)text, strlen(text), "", &options, &encoded) ==
+          TXX_ERR_EMPTY_PASSWORD);
+    CHECK(txx_encode_text((const uint8_t *)text, strlen(text), "pw", &options, &encoded) == TXX_OK);
+    CHECK(txx_decode_text(encoded.data, encoded.len, "", &decoded) == TXX_ERR_EMPTY_PASSWORD);
+    txx_buffer_secure_free(&encoded);
+}
+
+static void test_repeat_weak_kdf_rejected(void)
+{
+    txx_codec_options options;
+    txx_buffer encoded;
+    const char *text = "secret";
+
+    test_options(&options);
+    options.kdf.memory_blocks = TXX_DECODE_MIN_KDF_MEMORY_BLOCKS - 1U;
+    CHECK(txx_encode_text((const uint8_t *)text, strlen(text), "pw", &options, &encoded) ==
+          TXX_ERR_UNSUPPORTED);
+    txx_buffer_secure_free(&encoded);
 }
 
 static void round_trip_bytes(const uint8_t *text, size_t len)
@@ -312,6 +340,8 @@ int main(void)
     test_compression_decisions();
     test_header_reports_compression();
     test_platform_helpers();
+    test_repeat_empty_password();
+    test_repeat_weak_kdf_rejected();
 
     if (failures != 0) {
         fprintf(stderr, "%d test failure(s)\n", failures);

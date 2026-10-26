@@ -9,6 +9,9 @@
 
 #include "platform/file_io.h"
 
+#include "core/txx_buffer.h"
+#include "core/txx_status.h"
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -325,7 +328,7 @@ txx_status txx_read_file_limited(const char *path, uint64_t max_bytes, txx_buffe
     read_len = buffer->len == 0U ? 0U : fread(buffer->data, 1, buffer->len, file);
     fclose(file);
     if (read_len != buffer->len) {
-        txx_buffer_free(buffer);
+        txx_buffer_secure_free(buffer);
         return TXX_ERR_IO;
     }
     return TXX_OK;

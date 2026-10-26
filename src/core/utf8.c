@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "core/txx_buffer.h"
+
 static int is_continuation(uint8_t byte)
 {
     return byte >= 0x80U && byte <= 0xBFU;
@@ -87,6 +89,9 @@ static int looks_like_binary_8bit(const uint8_t *data, size_t len)
         }
     }
 
+    if (len / 20U < controls) {
+        return 1;
+    }
     return controls * 20U > len;
 }
 
@@ -479,7 +484,7 @@ txx_status txx_text_decode_to_utf8(const uint8_t *data, size_t len, txx_buffer *
     }
 
     if (!txx_utf8_validate(utf8->data, utf8->len)) {
-        txx_buffer_free(utf8);
+        txx_buffer_secure_free(utf8);
         return TXX_ERR_UTF8;
     }
 

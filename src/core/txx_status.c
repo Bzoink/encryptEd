@@ -27,6 +27,8 @@ const char *txx_status_string(txx_status status)
         return "I/O failed";
     case TXX_ERR_OVERFLOW:
         return "size overflow";
+    case TXX_ERR_EMPTY_PASSWORD:
+        return "password must not be empty";
     default:
         return "unknown error";
     }

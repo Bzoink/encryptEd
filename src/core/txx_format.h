@@ -23,6 +23,10 @@
 /* a defense-in-depth range of 256..262144 blocks, 2..10 passes, and       */
 /* 1..8 lanes with memory_blocks >= 8*lanes for untrusted headers.          */
 #define TXX_MIN_KDF_MEMORY_BLOCKS 256U
+/* Decoders refuse Argon2 parameters this weak, even though the format still */
+/* defines 256..262144 blocks as legal for writers: a hostile file could     */
+/* otherwise grind a reused password offline at negligible cost.            */
+#define TXX_DECODE_MIN_KDF_MEMORY_BLOCKS 8192U
 #define TXX_MIN_KDF_PASSES 2U
 #define TXX_MAX_KDF_PASSES 10U
 #define TXX_MAX_TEXT_BYTES (128ULL * 1024ULL * 1024ULL)

@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "core/txx_buffer.h"
 #include "microz.h"
 
 static txx_status copy_payload(const uint8_t *input, size_t input_len, txx_buffer *payload)
@@ -57,7 +58,7 @@ txx_status txx_compress_encode(const uint8_t *input,
     }
     compressed.len = compressed_len;
 
-    if ((size_t)compressed_len + (size_t)min_savings < input_len) {
+    if (compressed_len < input_len && input_len - compressed_len > (size_t)min_savings) {
         *payload = compressed;
         *is_compressed = 1;
         return TXX_OK;

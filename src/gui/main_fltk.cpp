@@ -22,6 +22,7 @@
 #include <FL/filename.H>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -91,6 +92,41 @@ static void secure_free_text(char *text)
     }
     txx_secure_zero(text, std::strlen(text));
     free(text);
+}
+
+// Only launch URLs with an explicitly understood scheme. Anything else
+// (file://, custom schemes, embedded paths) must not reach the OS handler,
+// since the target text is untrusted document content.
+static bool is_safe_external_uri(const std::string &url)
+{
+    auto scheme_ok = [](const std::string &scheme) {
+        for (const std::string &known : {"http", "https", "mailto"}) {
+            size_t n = known.size();
+            if (scheme.size() == n) {
+                bool match = true;
+                for (size_t i = 0; i < n; ++i) {
+                    if (std::tolower(static_cast<unsigned char>(scheme[i])) != known[i]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) return true;
+            }
+        }
+        return false;
+    };
+    size_t colon = url.find(':');
+    if (colon == std::string::npos || colon == 0 || colon > 32) return false;
+    std::string scheme = url.substr(0, colon);
+    for (char ch : scheme) {
+        unsigned char c = static_cast<unsigned char>(ch);
+        if (!std::isalnum(c) && ch != '+' && ch != '-' && ch != '.') return false;
+    }
+    if (url.compare(colon, 3, "://") == 0) {
+        return scheme_ok(scheme);
+    }
+    // mailto: and similar non-hierarchical schemes pass through unchanged.
+    return scheme_ok(scheme) && colon + 1u < url.size();
 }
 
 static void blend_icon_pixel(unsigned char *pixels,
@@ -1720,6 +1756,10 @@ class EncryptEdWindow : public Fl_Double_Window {
             editor_->set_ctrl_click_callback([this](int pos) -> bool {
                 std::string url = md_hl_->url_at(pos);
                 if (url.empty()) return false;
+                if (!is_safe_external_uri(url)) {
+                    fl_beep();
+                    return false;
+                }
                 fl_open_uri(url.c_str());
                 return true;
             });

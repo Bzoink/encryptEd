@@ -13,7 +13,8 @@ typedef enum txx_status {
     TXX_ERR_UNSUPPORTED,
     TXX_ERR_AUTH,
     TXX_ERR_IO,
-    TXX_ERR_OVERFLOW
+    TXX_ERR_OVERFLOW,
+    TXX_ERR_EMPTY_PASSWORD
 } txx_status;
 
 const char *txx_status_string(txx_status status);

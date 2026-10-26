@@ -54,6 +54,8 @@ using namespace tui_theme;
 namespace {
 
 constexpr uint64_t kMaxFileBytes = 64ull * 1024 * 1024;
+constexpr std::size_t kMaxPipedBytes = 64ull * 1024 * 1024;
+constexpr std::size_t kMaxPasteBytes = 16ull * 1024 * 1024;
 
 void wipe_string(std::string &value) {
     if (!value.empty()) txx_secure_zero(value.data(), value.size());
@@ -85,6 +87,9 @@ public:
     ~SecureString() { clear(); }
     void assign(const std::string &value) {
         clear();
+        // Size the buffer once so later mutations never reallocate and leak
+        // password remnants in freed heap.
+        value_.reserve(value.size() + 4096);
         value_ = value;
         present_ = true;
     }
@@ -2023,13 +2028,17 @@ private:
 
     void cmd_quit()   { confirm_discard([this]{ screen_->Exit(); }); }
     void cmd_cut()    { if (!buffer_.has_selection()) return;
+                        wipe_string(clipboard_);
                         clipboard_ = buffer_.selected_text(); clip::set_system(clipboard_);
                         edit([&]{ buffer_.delete_selection(); }); }
     void cmd_copy()   { if (!buffer_.has_selection()) return;
+                        wipe_string(clipboard_);
                         clipboard_ = buffer_.selected_text(); clip::set_system(clipboard_);
                         set_status("Copied"); }
     void cmd_paste()  { std::string sys;
-                        if (clip::get_system(sys) && !sys.empty()) clipboard_ = sys;
+                        if (clip::get_system(sys) && !sys.empty() && sys.size() <= kMaxPasteBytes)
+                            clipboard_ = sys;
+                        wipe_string(sys);
                         if (clipboard_.empty()) return;
                         edit([&]{ buffer_.insert_text(clipboard_); }); }
     void cmd_find()   { show_prompt("Find", false, last_find_, [this](bool ok, std::string q){
@@ -2346,8 +2355,15 @@ int main(int argc, char **argv) {
     if (path.empty() && !isatty(STDIN_FILENO)) {
         char buffer[65536];
         ssize_t count = 0;
-        while ((count = read(STDIN_FILENO, buffer, sizeof buffer)) > 0)
-            piped.append(buffer, static_cast<std::size_t>(count));
+        // Cap the piped document at the same limit used for file opens so a
+        // runaway pipe (`yes | etui`) cannot exhaust memory.
+        std::size_t budget = kMaxPipedBytes;
+        while ((count = read(STDIN_FILENO, buffer, sizeof buffer)) > 0) {
+            const std::size_t take = std::min(budget, static_cast<std::size_t>(count));
+            piped.append(buffer, take);
+            budget -= take;
+            if (budget == 0) break;
+        }
     }
 
     struct termios original{};

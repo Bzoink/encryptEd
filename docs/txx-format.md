@@ -45,7 +45,7 @@ offset size field
 ```
 
 For version 1, `payload_len` and `ciphertext_len` are equal because the AEAD tag is stored separately.
-Readers accept 256 through 262144 memory blocks, 2 through 10 passes, and 1 through 8 lanes, with at least 8 memory blocks per lane. These bounds are checked before allocating Argon2 memory or doing password work.
+The format permits writers to use 256 through 262144 memory blocks, 2 through 10 passes, and 1 through 8 lanes, with at least 8 memory blocks per lane. Because a hostile file can otherwise request near-zero Argon2 cost and grind a reused password offline cheaply, this implementation refuses on both encoding and decoding any parameter set below 8192 memory blocks (8 MiB), before allocating Argon2 memory or doing password work.
 
 ## Processing Order
 
