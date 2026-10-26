@@ -6,6 +6,8 @@
 
 EncryptEd is a small encrypted text editor with a FLTK GUI and a C17 core for UTF-8 text files stored in a compressed and encrypted `.txx` format.
 
+See the [1.3 release notes](CHANGELOG.md) for recent changes.
+
 ## Build
 
 Release builds use `-O2 -DNDEBUG` with GCC/Clang, including dependencies built

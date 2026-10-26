@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(encryptEd VERSION 1.2 LANGUAGES C CXX)
+project(encryptEd VERSION 1.3 LANGUAGES C CXX)
 
 # Prefer -O2 over CMake's default -O3 for GCC/Clang Release builds, including
 # libraries built from source. Keep the other Release flags (e.g. -DNDEBUG).
