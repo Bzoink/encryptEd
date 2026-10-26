@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <functional>
@@ -23,6 +25,8 @@
 #include <ftxui/screen/string.hpp>
 
 #ifndef _WIN32
+#include <signal.h>
+#include <sys/resource.h>
 #include <termios.h>
 #include <unistd.h>
 #endif
@@ -148,6 +152,7 @@ public:
                 reinterpret_cast<const uint8_t *>(piped_text.data()), piped_text.size(), &mixed);
             if (nl != TXX_NEWLINE_UNKNOWN) settings_.newline_style = nl;
             buffer_.set_text(piped_text);
+            wipe_string(piped_text);
             filepath_.clear();
             password_.clear();
             dirty_ = true;
@@ -217,12 +222,18 @@ public:
         return base;
     }
 
+    bool selection_equals(const std::string &query) {
+        std::string selection = buffer_.selected_text();
+        StringWiper wiper{selection};
+        return buffer_.has_selection() && selection == query;
+    }
+
     bool OnEvent(Event event) override {
         if (plugin_running_) return true;
         if (search_panel_open_) {
             if (event == Event::Escape) { search_panel_open_ = false; return true; }
             if (event == Event::F3 || event.input() == "\x1b[13~") {
-                find_match(last_find_, false, buffer_.has_selection() && buffer_.selected_text() == last_find_);
+                find_match(last_find_, false, selection_equals(last_find_));
                 return true;
             }
             if (event == Event::F2 || event.input() == "\x1b[12~") {
@@ -2070,8 +2081,10 @@ private:
         if (query.empty()) { set_status("Enter search text"); return false; }
         std::string document = buffer_.text();
         StringWiper document_wiper{document};
+        std::string selection = buffer_.selected_text();
+        StringWiper selection_wiper{selection};
         std::size_t offset = buffer_.byte_position(buffer_.cursor());
-        if (advance && buffer_.has_selection() && buffer_.selected_text() == query)
+        if (advance && buffer_.has_selection() && selection == query)
             offset = buffer_.byte_position(previous ? buffer_.selection_start() : buffer_.selection_end());
         else if (advance && !previous && offset < document.size())
             ++offset;
@@ -2086,13 +2099,16 @@ private:
         }
         if (found == std::string::npos) {
             buffer_.clear_selection();
-            set_status("Not found: " + query);
+            // Do not echo the query: search terms are often the most sensitive
+            // strings in an encrypted document, and the status line ends up in
+            // the terminal scrollback buffer.
+            set_status("Not found");
             return false;
         }
         const Position first = buffer_.position_from_byte(found);
         buffer_.set_cursor(first);
         buffer_.set_selection(first, buffer_.position_from_byte(found + query.size()));
-        set_status("Found: " + query + (wrapped ? " (wrapped)" : ""));
+        set_status(wrapped ? "Found (wrapped)" : "Found");
         return true;
     }
 
@@ -2103,7 +2119,9 @@ private:
 
     void replace_match() {
         if (last_find_.empty()) { set_status("Enter search text"); return; }
-        if (!buffer_.has_selection() || buffer_.selected_text() != last_find_) {
+        std::string selection = buffer_.selected_text();
+        StringWiper selection_wiper{selection};
+        if (!buffer_.has_selection() || selection != last_find_) {
             find_match(last_find_, false, false);
             return; // First select a matching occurrence; never replace unrelated text.
         }
@@ -2123,6 +2141,16 @@ private:
         StringWiper document_wiper{document};
         std::string result;
         StringWiper result_wiper{result};
+        // Pre-size the result so append() never reallocates: a grown-away
+        // std::string buffer would leave plaintext in freed heap.
+        std::size_t occurrences = 0;
+        for (std::size_t pos = 0; (pos = document.find(last_find_, pos)) != std::string::npos;
+             pos += last_find_.size())
+            ++occurrences;
+        const std::size_t growth = last_replace_.size() > last_find_.size()
+            ? (last_replace_.size() - last_find_.size()) * occurrences
+            : 0;
+        result.reserve(document.size() + growth);
         std::size_t position = 0, count = 0;
         while (true) {
             const auto found = document.find(last_find_, position);
@@ -2132,7 +2160,7 @@ private:
             position = found + last_find_.size();
             ++count;
         }
-        if (!count) { set_status("Not found: " + last_find_); return; }
+        if (!count) { set_status("Not found"); return; }
         const auto cursor = buffer_.byte_position(buffer_.cursor());
         if (buffer_.replace_text(result)) {
             dirty_ = true;
@@ -2145,7 +2173,7 @@ private:
     void cmd_replace() {
         search_panel_open_ = true;
         auto next_action = [this] {
-            find_match(last_find_, false, buffer_.has_selection() && buffer_.selected_text() == last_find_);
+            find_match(last_find_, false, selection_equals(last_find_));
         };
         auto input_options = InputOption::Default();
         input_options.multiline = false;
@@ -2344,6 +2372,18 @@ private:
 };
 
 int main(int argc, char **argv) {
+#ifndef _WIN32
+    // Sensitive documents and the in-memory password must not leak through
+    // crash dumps; disable them outright (best effort).
+    {
+        struct rlimit cores{};
+        setrlimit(RLIMIT_CORE, &cores);
+    }
+    // A clipboard helper that exits early must not kill the editor with
+    // SIGPIPE; write errors are handled by the clipboard code instead.
+    signal(SIGPIPE, SIG_IGN);
+#endif
+
     std::string path = (argc > 1) ? argv[1] : "";
     std::string piped;
 
@@ -2358,11 +2398,46 @@ int main(int argc, char **argv) {
         // Cap the piped document at the same limit used for file opens so a
         // runaway pipe (`yes | etui`) cannot exhaust memory.
         std::size_t budget = kMaxPipedBytes;
+        // Collect into a manually grown buffer: appending to a std::string
+        // reallocates through copies, leaving the document in freed heap.
+        // Old blocks are wiped before release and the final string is sized
+        // exactly once from the collected length.
+        char *collected = nullptr;
+        std::size_t collected_len = 0;
+        std::size_t collected_cap = 0;
         while ((count = read(STDIN_FILENO, buffer, sizeof buffer)) > 0) {
             const std::size_t take = std::min(budget, static_cast<std::size_t>(count));
-            piped.append(buffer, take);
+            if (collected_len + take > collected_cap) {
+                std::size_t new_cap = collected_cap == 0 ? sizeof buffer : collected_cap * 2;
+                if (new_cap > kMaxPipedBytes) new_cap = kMaxPipedBytes;
+                char *grown = static_cast<char *>(malloc(new_cap));
+                if (grown == nullptr) {
+                    txx_secure_zero(buffer, sizeof buffer);
+                    if (collected != nullptr) {
+                        txx_secure_zero(collected, collected_len);
+                        free(collected);
+                    }
+                    std::fputs("out of memory\n", stderr);
+                    return 1;
+                }
+                if (collected != nullptr) {
+                    memcpy(grown, collected, collected_len);
+                    txx_secure_zero(collected, collected_len);
+                    free(collected);
+                }
+                collected = grown;
+                collected_cap = new_cap;
+            }
+            memcpy(collected + collected_len, buffer, take);
+            collected_len += take;
             budget -= take;
             if (budget == 0) break;
+        }
+        txx_secure_zero(buffer, sizeof buffer);
+        if (collected != nullptr) {
+            piped.assign(collected, collected_len);
+            txx_secure_zero(collected, collected_cap);
+            free(collected);
         }
     }
 

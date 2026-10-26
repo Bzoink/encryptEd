@@ -41,6 +41,7 @@
 #else
 #  include <sys/types.h>
 #  include <sys/stat.h>
+#  include <sys/resource.h>
 #  include <sys/wait.h>
 #  include <unistd.h>
 #  include <limits.h>
@@ -84,6 +85,13 @@ static void wipe_string(std::string &s)
     }
     s.clear();
 }
+
+// RAII helper: wipes a document-text string when its scope ends, including
+// early returns.
+struct StringWiper {
+    std::string &value;
+    ~StringWiper() { wipe_string(value); }
+};
 
 static void secure_free_text(char *text)
 {
@@ -2217,14 +2225,18 @@ class EncryptEdWindow : public Fl_Double_Window {
         int end = 0;
         if (selected_text_range(start, end)) {
             std::string current = buffer_range_text(start, end);
+            StringWiper current_wiper{current};
             const int column = buf_->count_displayed_characters(buf_->line_start(start), start);
             std::string updated = tt_tabs_to_spaces(current, settings_.indent_width, column);
+            StringWiper updated_wiper{updated};
             if (updated != current) apply_range_text(start, end, updated, true);
             return;
         }
 
         std::string current = buffer_text();
+        StringWiper current_wiper{current};
         std::string updated = tt_tabs_to_spaces(current, settings_.indent_width);
+        StringWiper updated_wiper{updated};
         if (updated != current) apply_document_text(updated);
     }
 
@@ -2234,13 +2246,17 @@ class EncryptEdWindow : public Fl_Double_Window {
         int end = 0;
         if (selected_line_range(start, end)) {
             std::string current = buffer_range_text(start, end);
+            StringWiper current_wiper{current};
             std::string updated = tt_spaces_to_tabs(current, settings_.indent_width);
+            StringWiper updated_wiper{updated};
             if (updated != current) apply_range_text(start, end, updated, true);
             return;
         }
 
         std::string current = buffer_text();
+        StringWiper current_wiper{current};
         std::string updated = tt_spaces_to_tabs(current, settings_.indent_width);
+        StringWiper updated_wiper{updated};
         if (updated != current) apply_document_text(updated);
     }
 
@@ -2250,13 +2266,17 @@ class EncryptEdWindow : public Fl_Double_Window {
         int end = 0;
         if (selected_line_range(start, end)) {
             std::string current = buffer_range_text(start, end);
+            StringWiper current_wiper{current};
             std::string updated = tt_trim_trailing(current);
+            StringWiper updated_wiper{updated};
             if (updated != current) apply_range_text(start, end, updated, true);
             return;
         }
 
         std::string current = buffer_text();
+        StringWiper current_wiper{current};
         std::string updated = tt_trim_trailing(current);
+        StringWiper updated_wiper{updated};
         if (updated != current) apply_document_text(updated);
     }
 
@@ -2266,20 +2286,26 @@ class EncryptEdWindow : public Fl_Double_Window {
         int end = 0;
         if (selected_line_range(start, end)) {
             std::string current = buffer_range_text(start, end);
+            StringWiper current_wiper{current};
             std::string updated = tt_remove_blank_lines(current);
+            StringWiper updated_wiper{updated};
             if (updated != current) apply_range_text(start, end, updated, true);
             return;
         }
 
         std::string current = buffer_text();
+        StringWiper current_wiper{current};
         std::string updated = tt_remove_blank_lines(current);
+        StringWiper updated_wiper{updated};
         if (updated != current) apply_document_text(updated);
     }
 
     void do_ensure_trailing_newline()
     {
         std::string current = buffer_text();
+        StringWiper current_wiper{current};
         std::string updated = tt_ensure_trailing_newline(current);
+        StringWiper updated_wiper{updated};
         if (updated != current) apply_document_text(updated);
     }
 
@@ -2292,13 +2318,17 @@ class EncryptEdWindow : public Fl_Double_Window {
         int end   = 0;
         if (selected_line_range(start, end)) {
             std::string current = buffer_range_text(start, end);
+            StringWiper current_wiper{current};
             std::string updated = tt_wrap_columns(current, width);
+            StringWiper updated_wiper{updated};
             if (updated != current) apply_range_text(start, end, updated, true);
             return;
         }
 
         std::string current = buffer_text();
+        StringWiper current_wiper{current};
         std::string updated = tt_wrap_columns(current, width);
+        StringWiper updated_wiper{updated};
         if (updated != current) apply_document_text(updated);
     }
 
@@ -2630,12 +2660,33 @@ class EncryptEdWindow : public Fl_Double_Window {
         std::wstring wpath(static_cast<size_t>(wlen), L'\0');
         MultiByteToWideChar(CP_UTF8, 0, filepath_.c_str(), -1, wpath.data(), wlen);
         if (!wpath.empty() && wpath.back() == L'\0') wpath.pop_back();
-        std::wstring params = L"/select,\"" + wpath + L"\"";
+        // Apply the standard Windows argument-quoting rules to the path so
+        // quotes or trailing backslashes in it cannot alter how Explorer
+        // parses the parameter string.
+        std::wstring quoted = L"\"";
+        size_t backslashes = 0;
+        for (wchar_t c : wpath) {
+            if (c == L'\\') {
+                ++backslashes;
+                quoted.push_back(c);
+                continue;
+            }
+            if (c == L'"') {
+                quoted.append(backslashes, L'\\');  // double the preceding run
+                quoted += L"\\\"";                  // escaped quote
+            } else {
+                quoted.push_back(c);
+            }
+            backslashes = 0;
+        }
+        quoted.append(backslashes, L'\\');  // trailing run precedes the closing quote
+        quoted += L"\"";
+        std::wstring params = L"/select," + quoted;
         ShellExecuteW(nullptr, L"open", L"explorer.exe",
                       params.c_str(), nullptr, SW_SHOWNORMAL);
 #else
 #  ifdef __APPLE__
-        const char *prog = "open";
+        const char *prog = "/usr/bin/open";
         const char *arg1 = "-R";
         const char *arg2 = filepath_.c_str();
         char *const argv[] = {
@@ -2665,7 +2716,19 @@ class EncryptEdWindow : public Fl_Double_Window {
         if (!S_ISDIR(sb.st_mode)) return;
         if (sb.st_uid != getuid()) return;
 
-        const char *prog = "xdg-open";
+        // Resolve xdg-open from fixed system directories rather than $PATH:
+        // a substituted helper would execute with the editor's user context.
+        static const char *const kXdgDirs[] = {"/usr/bin", "/usr/local/bin", "/bin"};
+        std::string prog_path;
+        for (const char *xdg_dir : kXdgDirs) {
+            std::string candidate = std::string(xdg_dir) + "/xdg-open";
+            if (access(candidate.c_str(), X_OK) == 0) {
+                prog_path = candidate;
+                break;
+            }
+        }
+        if (prog_path.empty()) return;
+        const char *prog = prog_path.c_str();
         char *const argv[] = {
             const_cast<char *>(prog),
             resolved,
@@ -3017,6 +3080,14 @@ static std::string initial_path_from_cmdline()
 
 int main(int argc, char **argv)
 {
+#ifndef _WIN32
+    // Sensitive documents and the in-memory password must not leak through
+    // crash dumps; disable them outright (best effort).
+    {
+        struct rlimit cores{};
+        setrlimit(RLIMIT_CORE, &cores);
+    }
+#endif
     Fl::scheme("gtk+");
     Fl_Window::default_xclass("encryptEd");
     EncryptEdWindow win(900, 600);

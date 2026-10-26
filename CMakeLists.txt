@@ -64,12 +64,22 @@ option(ENCRYPTED_ENABLE_HARDENING
 
 function(encrypted_apply_hardening target)
     if(NOT MSVC)
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wformat=2)
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wformat=2 -fstack-protector-strong)
+        # _FORTIFY_SOURCE only takes effect with optimisation enabled and
+        # warns otherwise, so gate it on optimised build types.
+        if(CMAKE_BUILD_TYPE MATCHES "RelWithDebInfo|Release|MinSizeRel")
+            target_compile_options(${target} PRIVATE -D_FORTIFY_SOURCE=2)
+        endif()
         if(ENCRYPTED_ENABLE_HARDENING)
             target_compile_options(${target} PRIVATE
                 -fsanitize=address,undefined -fno-omit-frame-pointer
             )
             target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+        endif()
+        if(UNIX AND NOT APPLE AND CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+            # Full RELRO: resolve everything at load time so the GOT is
+            # read-only afterwards.
+            target_link_options(${target} PRIVATE -Wl,-z,relro -Wl,-z,now)
         endif()
     endif()
 endfunction()

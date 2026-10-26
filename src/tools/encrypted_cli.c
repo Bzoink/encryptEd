@@ -7,6 +7,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <termios.h>
@@ -123,6 +124,16 @@ int main(int argc, char **argv)
     int is_unpack;
 
     memset(password, 0, sizeof(password));
+#if !defined(_WIN32)
+    /* Decrypted documents and the password must not leak through crash
+     * dumps; disable them outright (best effort). */
+    {
+        struct rlimit cores;
+        cores.rlim_cur = 0;
+        cores.rlim_max = 0;
+        setrlimit(RLIMIT_CORE, &cores);
+    }
+#endif
     if (argc == 5 && strcmp(argv[4], "--password-stdin") == 0) {
         from_stdin = 1;
     } else if (argc != 4) {

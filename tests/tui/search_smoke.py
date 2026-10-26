@@ -67,7 +67,7 @@ def main():
             terminal.click('Find:', offset=14)
             terminal.send('\x1b[F\x7fmissing')
             terminal.click('│Replace All│')
-            terminal.locate('Not found: missing')
+            terminal.locate('Not found')
             terminal.click('Find:', offset=14)
             terminal.send('\x1b[F' + '\x7f' * 7)
             terminal.click('│Replace All│')
@@ -82,7 +82,7 @@ def main():
             terminal.send(b'\x12')
             terminal.send('X')
             terminal.click('│Replace│')  # select only, no text change
-            terminal.locate('Found: X')
+            terminal.locate('Found')
             terminal.click('│Close│')
             terminal.save(document, deleted)
             terminal.send(b'\x12')

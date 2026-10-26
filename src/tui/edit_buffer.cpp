@@ -16,6 +16,27 @@ enum EditTag {
     TAG_DELETE,
     TAG_STRUCTURAL,  // anything that should always start a fresh undo step
 };
+
+// Erase n bytes from the front of a line without leaving the shifted-away
+// content in the string's unused tail: std::string::erase only moves the
+// bytes it keeps, so the region between the new and old sizes would keep a
+// copy of the removed text until the buffer is freed.
+void secure_erase_front(std::string &line, std::size_t n) {
+    if (n == 0 || line.empty()) return;
+    if (n >= line.size()) {
+        txx_secure_zero(line.data(), line.size());
+        line.clear();
+        return;
+    }
+    const std::size_t old_size = line.size();
+    line.erase(0, n);
+    const std::size_t new_size = line.size();
+    // Growing back within capacity never reallocates; the regained range is
+    // writable, so the stale tail can be zeroed before shrinking again.
+    line.resize(old_size);
+    txx_secure_zero(line.data() + new_size, old_size - new_size);
+    line.resize(new_size);
+}
 }  // namespace
 
 EditBuffer::EditBuffer() = default;
@@ -100,21 +121,27 @@ int EditBuffer::line_length(int i) const {
 }
 
 void EditBuffer::set_text(const std::string &text) {
-    std::vector<std::string> parsed;
-    std::string cur;
+    // Build every line with a single, exactly sized allocation so the
+    // document is never copied into freed heap by growing strings.
+    std::size_t line_total = 1;
     for (char ch : text) {
-        if (ch == '\n') {
-            if (!cur.empty() && cur.back() == '\r') cur.pop_back();
-            parsed.push_back(cur);
-            if (!cur.empty()) txx_secure_zero(cur.data(), cur.size());
-            cur.clear();
-        } else {
-            cur.push_back(ch);
-        }
+        if (ch == '\n') ++line_total;
     }
-    if (!cur.empty() && cur.back() == '\r') cur.pop_back();
-    parsed.push_back(cur);
-    if (!cur.empty()) txx_secure_zero(cur.data(), cur.size());
+    std::vector<std::string> parsed;
+    parsed.reserve(line_total);
+    std::size_t pos = 0;
+    for (;;) {
+        const std::size_t nl = text.find('\n', pos);
+        const std::size_t end = (nl == std::string::npos) ? text.size() : nl;
+        std::size_t len = end - pos;
+        if (len != 0 && text[pos + len - 1] == '\r') --len;  // strip CR before LF
+        std::string line;
+        line.reserve(len);
+        line.append(text, pos, len);
+        parsed.push_back(std::move(line));
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    }
     wipe_lines(lines_);
     wipe_history(undo_);
     wipe_history(redo_);
@@ -128,6 +155,7 @@ void EditBuffer::set_text(const std::string &text) {
 
 std::string EditBuffer::text() const {
     std::string out;
+    out.reserve(byte_count());
     for (std::size_t i = 0; i < lines_.size(); ++i) {
         if (i) out.push_back('\n');
         out += lines_[i];
@@ -207,15 +235,21 @@ std::string EditBuffer::selected_text() const {
         std::size_t bb = col_to_byte(ln, b.col);
         return ln.substr(ba, bb - ba);
     }
-    std::string out;
+    std::size_t total = 0;
     const std::string &first = lines_[static_cast<std::size_t>(a.line)];
+    total += first.size() - col_to_byte(first, a.col) + 1;
+    for (int l = a.line + 1; l < b.line; ++l)
+        total += lines_[static_cast<std::size_t>(l)].size() + 1;
+    const std::string &last = lines_[static_cast<std::size_t>(b.line)];
+    total += col_to_byte(last, b.col);
+    std::string out;
+    out.reserve(total);
     out += first.substr(col_to_byte(first, a.col));
     out.push_back('\n');
     for (int l = a.line + 1; l < b.line; ++l) {
         out += lines_[static_cast<std::size_t>(l)];
         out.push_back('\n');
     }
-    const std::string &last = lines_[static_cast<std::size_t>(b.line)];
     out += last.substr(0, col_to_byte(last, b.col));
     return out;
 }
@@ -241,19 +275,39 @@ void EditBuffer::replace_range(Position a, Position b, const std::string &with) 
     lines_.erase(lines_.begin() + a.line, lines_.begin() + b.line + 1);
 
     if (segs.size() == 1) {
-        std::string merged = head + segs[0] + tail;
+        std::string merged;
+        merged.reserve(head.size() + segs[0].size() + tail.size());
+        merged += head;
+        merged += segs[0];
+        merged += tail;
         lines_.insert(lines_.begin() + a.line, merged);
-        std::string cursor_text = head + segs[0];
+        std::string cursor_text;
+        cursor_text.reserve(head.size() + segs[0].size());
+        cursor_text += head;
+        cursor_text += segs[0];
         cursor_ = Position{a.line, byte_to_col(cursor_text, cursor_text.size())};
         if (!merged.empty()) txx_secure_zero(merged.data(), merged.size());
         if (!cursor_text.empty()) txx_secure_zero(cursor_text.data(), cursor_text.size());
     } else {
         std::vector<std::string> ins;
-        ins.push_back(head + segs.front());
+        ins.reserve(segs.size());
+        {
+            std::string first;
+            first.reserve(head.size() + segs.front().size());
+            first += head;
+            first += segs.front();
+            ins.push_back(std::move(first));
+        }
         for (std::size_t i = 1; i + 1 < segs.size(); ++i) ins.push_back(segs[i]);
         std::string lastseg = segs.back();
+        {
+            std::string last;
+            last.reserve(lastseg.size() + tail.size());
+            last += lastseg;
+            last += tail;
+            ins.push_back(std::move(last));
+        }
         int last_line = a.line + static_cast<int>(segs.size()) - 1;
-        ins.push_back(lastseg + tail);
         lines_.insert(lines_.begin() + a.line, ins.begin(), ins.end());
         cursor_ = Position{last_line, cp_length(lastseg)};
         wipe_lines(ins);
@@ -397,11 +451,11 @@ void EditBuffer::outdent(int width) {
     for (int l = a; l <= b; ++l) {
         std::string &ln = lines_[static_cast<std::size_t>(l)];
         if (!ln.empty() && ln[0] == '\t') {
-            ln.erase(0, 1);
+            secure_erase_front(ln, 1);
         } else {
             std::size_t n = 0;
             while (n < ln.size() && n < static_cast<std::size_t>(width) && ln[n] == ' ') ++n;
-            ln.erase(0, n);
+            secure_erase_front(ln, n);
         }
     }
     cursor_ = clamp(cursor_);
@@ -436,12 +490,10 @@ void EditBuffer::remove_line() {
 void EditBuffer::undo() {
     if (undo_.empty()) return;
     redo_.push_back(Snapshot{lines_, cursor_, anchor_, selection_cursor_, has_selection_});
-    Snapshot s = undo_.back();
-    wipe_lines(undo_.back().lines);
+    Snapshot s = std::move(undo_.back());
     undo_.pop_back();
     wipe_lines(lines_);
-    lines_ = s.lines;
-    wipe_lines(s.lines);
+    lines_ = std::move(s.lines);
     cursor_ = s.cursor;
     anchor_ = s.anchor;
     selection_cursor_ = s.selection_cursor;
@@ -452,12 +504,10 @@ void EditBuffer::undo() {
 void EditBuffer::redo() {
     if (redo_.empty()) return;
     undo_.push_back(Snapshot{lines_, cursor_, anchor_, selection_cursor_, has_selection_});
-    Snapshot s = redo_.back();
-    wipe_lines(redo_.back().lines);
+    Snapshot s = std::move(redo_.back());
     redo_.pop_back();
     wipe_lines(lines_);
-    lines_ = s.lines;
-    wipe_lines(s.lines);
+    lines_ = std::move(s.lines);
     cursor_ = s.cursor;
     anchor_ = s.anchor;
     selection_cursor_ = s.selection_cursor;

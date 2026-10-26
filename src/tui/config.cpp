@@ -11,13 +11,16 @@ namespace fs = std::filesystem;
 namespace {
 fs::path config_dir() {
 #if defined(_WIN32)
+    // Treat empty variables as unset (XDG and Windows both define empty as
+    // "fall back"), otherwise the config path becomes relative to whatever
+    // directory the editor was launched from.
     if (const char *appdata = std::getenv("APPDATA"))
-        return fs::path(appdata) / "encryptEd";
+        if (*appdata != '\0') return fs::path(appdata) / "encryptEd";
 #else
     if (const char *xdg = std::getenv("XDG_CONFIG_HOME"))
-        return fs::path(xdg) / "encryptEd";
+        if (*xdg != '\0') return fs::path(xdg) / "encryptEd";
     if (const char *home = std::getenv("HOME"))
-        return fs::path(home) / ".config" / "encryptEd";
+        if (*home != '\0') return fs::path(home) / ".config" / "encryptEd";
 #endif
     return fs::path();
 }
@@ -90,7 +93,10 @@ void config_load(AppSettings &s) {
         else if (key == "indent_mode") s.indent_mode = n ? AppSettings::INDENT_SPACES : AppSettings::INDENT_TABS;
         else if (key == "indent_width") s.indent_width = (n < 2 ? 2 : (n > 8 ? 8 : n));
         else if (key == "status_count") s.status_count = n >= 0 && n <= 2 ? static_cast<AppSettings::StatusCount>(n) : AppSettings::STATUS_COUNT_CHARS;
-        else if (key == "newline_style") s.newline_style = static_cast<txx_newline_style>(n);
+        else if (key == "newline_style") s.newline_style =
+            (n >= TXX_NEWLINE_UNKNOWN && n <= TXX_NEWLINE_MIXED)
+                ? static_cast<txx_newline_style>(n)
+                : TXX_NEWLINE_LF;
     }
 }
 
