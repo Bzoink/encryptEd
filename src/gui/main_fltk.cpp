@@ -1638,6 +1638,10 @@ struct SecureString {
         data_.resize(n);
         for (std::size_t i = 0; i < n; ++i)
             data_[i] = static_cast<uint8_t>(s[i]) ^ pad_[i];
+        // Best effort: keep the obfuscated password and its pad out of swap
+        // and core dumps. Small allocations normally fit RLIMIT_MEMLOCK.
+        (void)txx_secure_lock(pad_.data(), n);
+        (void)txx_secure_lock(data_.data(), n);
     }
 
     std::string get() const {
@@ -1648,8 +1652,16 @@ struct SecureString {
     }
 
     void clear() {
-        if (!data_.empty()) { txx_secure_zero(data_.data(), data_.size()); data_.clear(); }
-        if (!pad_.empty())  { txx_secure_zero(pad_.data(),  pad_.size());  pad_.clear();  }
+        if (!data_.empty()) {
+            txx_secure_unlock(data_.data(), data_.size());
+            txx_secure_zero(data_.data(), data_.size());
+            data_.clear();
+        }
+        if (!pad_.empty()) {
+            txx_secure_unlock(pad_.data(), pad_.size());
+            txx_secure_zero(pad_.data(), pad_.size());
+            pad_.clear();
+        }
     }
 
 private:
@@ -2122,7 +2134,9 @@ class EncryptEdWindow : public Fl_Double_Window {
     {
         if (!settings_.clear_clipboard_on_exit || !clipboard_has_document_text_)
             return;
-        Fl::copy("", 0, 0);
+        // Destination 2 clears the X11 selection and the clipboard; 0 alone
+        // would only clear the selection buffer (middle-click paste).
+        Fl::copy("", 0, 2);
         clipboard_has_document_text_ = false;
     }
 

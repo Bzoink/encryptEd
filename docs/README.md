@@ -256,10 +256,11 @@ Protected:
 
 Best-effort mitigations (these can fail and are not security boundaries):
 
-- While a document is open, the editor allocation is locked out of swap and
-  core dumps with `mlock()`/`VirtualLock()` and `MADV_DONTDUMP` where available.
-  Locking can fail under `RLIMIT_MEMLOCK` or a Windows working-set quota; the
-  About dialog reports whether it is active.
+- While a document is open, the editor allocation and the password buffers are
+  locked out of swap and core dumps with `mlock()`/`VirtualLock()` and
+  `MADV_DONTDUMP` where available. Locking can fail under `RLIMIT_MEMLOCK` or a
+  Windows working-set quota; the About dialog reports whether the document
+  buffer is active.
 - Core dumps are disabled at startup.
 - On Windows, the window is excluded from screen capture while a document is
   open, and clipboard content is marked to skip clipboard history and cloud sync.

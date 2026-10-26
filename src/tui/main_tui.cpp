@@ -96,8 +96,14 @@ public:
         value_.reserve(value.size() + 4096);
         value_ = value;
         present_ = true;
+        // Best effort: keep the password out of swap and core dumps.
+        (void)txx_secure_lock(value_.data(), value_.size());
     }
-    void clear() { wipe_string(value_); present_ = false; }
+    void clear() {
+        if (present_) (void)txx_secure_unlock(value_.data(), value_.size());
+        wipe_string(value_);
+        present_ = false;
+    }
     bool present() const { return present_; }
     const std::string &get() const { return value_; }
 private:
