@@ -45,7 +45,12 @@ set(ENCRYPTED_WINDOWS_UNINSTALL_REGISTRY_KEY
 
 function(encrypted_make_windows_self_contained target)
     if(WIN32 AND MINGW)
-        target_link_options(${target} PRIVATE -static -static-libgcc ${ARGN})
+        target_link_options(${target} PRIVATE
+            -static -static-libgcc
+            # ASLR, DEP, and 64-bit ASLR entropy for the PE image.
+            -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va
+            ${ARGN}
+        )
     endif()
 endfunction()
 
@@ -541,6 +546,20 @@ if(TARGET encryptEd)
     encrypted_make_windows_self_contained(gui_highlight_tests -static-libstdc++)
     encrypted_apply_hardening(gui_highlight_tests)
     add_test(NAME gui_highlight_tests COMMAND gui_highlight_tests)
+
+    add_executable(gui_secure_buffer_tests
+        tests/gui/secure_buffer_tests.cpp
+    )
+    target_link_libraries(gui_secure_buffer_tests PRIVATE encrypted_core)
+    if(TARGET fltk::fltk)
+        target_link_libraries(gui_secure_buffer_tests PRIVATE fltk::fltk)
+    else()
+        target_compile_options(gui_secure_buffer_tests PRIVATE ${_fltk_cxx_list})
+        target_link_options(gui_secure_buffer_tests PRIVATE ${_fltk_ld_list})
+    endif()
+    encrypted_make_windows_self_contained(gui_secure_buffer_tests -static-libstdc++)
+    encrypted_apply_hardening(gui_secure_buffer_tests)
+    add_test(NAME gui_secure_buffer_tests COMMAND gui_secure_buffer_tests)
 endif()
 
 add_executable(plugin_tests tests/plugin_tests.cpp)

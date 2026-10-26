@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <functional>
 #include <deque>
 #include <map>
@@ -63,6 +64,7 @@ extern "C" {
 #include "app/size_format.h"
 #include "gui/text_transform.h"
 #include "gui/highlight.h"
+#include "gui/secure_text.h"
 #include "gui/plugin_buffer.h"
 #include "gui/plugin_dialog.h"
 
@@ -93,18 +95,53 @@ struct StringWiper {
     ~StringWiper() { wipe_string(value); }
 };
 
-static void secure_free_text(char *text)
+// Wipe and release a heap copy returned by Fl_Text_Buffer. The length must be
+// passed explicitly: documents may contain NUL bytes, so strlen() undercounts.
+static void secure_free_text(char *text, std::size_t len)
 {
-    if (text == nullptr) {
-        return;
-    }
-    txx_secure_zero(text, std::strlen(text));
-    free(text);
+    gui_secure_free_text(text, len);
 }
 
 // Only launch URLs with an explicitly understood scheme. Anything else
 // (file://, custom schemes, embedded paths) must not reach the OS handler,
 // since the target text is untrusted document content.
+#ifdef _WIN32
+// Attach the two clipboard formats that tell Windows this content is
+// sensitive: Win+V history skips it and cloud clipboard monitoring ignores it.
+static void set_clipboard_dword(UINT format, DWORD value)
+{
+    if (format == 0) return;
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+    if (mem == nullptr) return;
+    void *p = GlobalLock(mem);
+    if (p == nullptr) {
+        GlobalFree(mem);
+        return;
+    }
+    *static_cast<DWORD *>(p) = value;
+    GlobalUnlock(mem);
+    if (SetClipboardData(format, mem) == nullptr) GlobalFree(mem);
+}
+
+static void mark_clipboard_sensitive()
+{
+    const UINT history = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+    const UINT monitor = RegisterClipboardFormatW(
+        L"ExcludeClipboardContentFromMonitorProcessing");
+    // The clipboard is a shared resource; retry briefly if another process
+    // holds it while our copy is still on the clipboard.
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (OpenClipboard(nullptr)) {
+            set_clipboard_dword(history, 0);
+            set_clipboard_dword(monitor, 0);
+            CloseClipboard();
+            return;
+        }
+        Sleep(10);
+    }
+}
+#endif
+
 static bool is_safe_external_uri(const std::string &url)
 {
     auto scheme_ok = [](const std::string &scheme) {
@@ -497,6 +534,28 @@ static bool ask_password_new(const char *title, std::string &out)
     return false;
 }
 
+// Whether the current document allocation is locked out of swap. Reported in
+// the About dialog; locking is best-effort and may fail under RLIMIT_MEMLOCK.
+static bool g_memory_locked = false;
+
+// Last user input, for the optional inactivity lock.
+static std::time_t g_last_activity = 0;
+
+static int activity_handler(int event)
+{
+    switch (event) {
+    case FL_KEYDOWN: case FL_KEYUP:
+    case FL_PUSH: case FL_DRAG: case FL_RELEASE:
+    case FL_MOVE: case FL_MOUSEWHEEL:
+    case FL_PASTE: case FL_FOCUS:
+        g_last_activity = std::time(nullptr);
+        break;
+    default:
+        break;
+    }
+    return 0;
+}
+
 static void show_about_dialog()
 {
     Fl_Window *dlg = new Fl_Window(560, 450, "About EncryptEd");
@@ -520,6 +579,8 @@ static void show_about_dialog()
         std::to_string(FL_MINOR_VERSION) + "." + std::to_string(FL_PATCH_VERSION);
     std::string body_text = about_text("EncryptEd - encrypted UTF-8 text editor",
         "FLTK " + fltk_version + " - LGPL with exceptions (GUI)");
+    body_text += std::string("\n\nMemory locking: ") +
+                 (g_memory_locked ? "active" : "unavailable");
 
     Fl_Box *body = new Fl_Box(24, 108, 512, 292, nullptr);
     body->copy_label(body_text.c_str());
@@ -595,6 +656,9 @@ struct AppSettings {
     bool        dark_mode          = false;
     int         highlight_mode     = 1;   // 0 off, 1 auto, 2 markdown, 3 language
     SynLang     highlight_lang     = SynLang::None;
+    int         lock_after_minutes = 0;   // 0 = never
+    bool        allow_clipboard    = true;
+    bool        clear_clipboard_on_exit = true;
     bool        vertical_scrollbar = true;
     IndentMode  indent_mode        = INDENT_TABS;
     int         indent_width       = 4;
@@ -878,6 +942,9 @@ class PrefsDialog : public Fl_Window {
     Fl_Check_Button *dark_btn_;
     Fl_Choice       *hl_choice_;
     Fl_Check_Button *scrollbar_btn_;
+    Fl_Choice       *lock_choice_;
+    Fl_Check_Button *copy_btn_;
+    Fl_Check_Button *clip_clear_btn_;
     Fl_Choice       *status_count_choice_;
     AppSettings      result_;
     bool             accepted_ = false;
@@ -918,6 +985,12 @@ class PrefsDialog : public Fl_Window {
                 : SynLang::None;
         }
         d->result_.vertical_scrollbar = d->scrollbar_btn_->value() != 0;
+        static const int kLockMinutes[] = {0, 1, 5, 10, 30};
+        const int lock_idx = d->lock_choice_->value();
+        d->result_.lock_after_minutes =
+            (lock_idx >= 0 && lock_idx < 5) ? kLockMinutes[lock_idx] : 0;
+        d->result_.allow_clipboard = d->copy_btn_->value() != 0;
+        d->result_.clear_clipboard_on_exit = d->clip_clear_btn_->value() != 0;
         d->result_.status_count = d->status_count_choice_->value() == 1
                                 ? AppSettings::STATUS_COUNT_BYTES
                                 : d->status_count_choice_->value() == 2
@@ -934,7 +1007,7 @@ class PrefsDialog : public Fl_Window {
 
 public:
     explicit PrefsDialog(const AppSettings &current)
-        : Fl_Window(310, 367, "Preferences"), result_(current)
+        : Fl_Window(340, 455, "Preferences"), result_(current)
     {
         set_modal();
 
@@ -1047,9 +1120,34 @@ public:
         scrollbar_btn_ = new Fl_Check_Button(108, 266, 190, 24, "Vertical scrollbar");
         scrollbar_btn_->value(current.vertical_scrollbar ? 1 : 0);
 
+        // Auto-lock
+        Fl_Box *ll = new Fl_Box(10, 302, 90, 24, "Lock after:");
+        ll->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
+        lock_choice_ = new Fl_Choice(108, 302, 190, 24);
+        lock_choice_->add("Never");
+        lock_choice_->add("1 minute");
+        lock_choice_->add("5 minutes");
+        lock_choice_->add("10 minutes");
+        lock_choice_->add("30 minutes");
+        {
+            int sel = 0;
+            const int mins = current.lock_after_minutes;
+            if (mins == 1) sel = 1;
+            else if (mins == 5) sel = 2;
+            else if (mins == 10) sel = 3;
+            else if (mins >= 30) sel = 4;
+            lock_choice_->value(sel);
+        }
+
+        // Clipboard policy
+        copy_btn_ = new Fl_Check_Button(108, 338, 190, 24, "Allow copying text");
+        copy_btn_->value(current.allow_clipboard ? 1 : 0);
+        clip_clear_btn_ = new Fl_Check_Button(108, 374, 190, 24, "Clear clipboard on exit/lock");
+        clip_clear_btn_->value(current.clear_clipboard_on_exit ? 1 : 0);
+
         // Buttons
-        Fl_Return_Button *ok  = new Fl_Return_Button(118, 327, 80, 28, "OK");
-        Fl_Button        *can = new Fl_Button(208, 327, 80, 28, "Cancel");
+        Fl_Return_Button *ok  = new Fl_Return_Button(148, 415, 80, 28, "OK");
+        Fl_Button        *can = new Fl_Button(238, 415, 80, 28, "Cancel");
         ok->callback(ok_cb,     this);
         can->callback(cancel_cb, this);
 
@@ -1074,6 +1172,7 @@ public:
 
 class DndTextEditor : public Fl_Text_Editor {
     std::function<void(const std::string &)> on_drop_;
+    std::function<void(bool)> on_copy_;  // true = cut
     bool dnd_active_ = false;
     bool text_drag_pending_ = false;
     bool is_text_drag_ = false;
@@ -1238,14 +1337,39 @@ class DndTextEditor : public Fl_Text_Editor {
         return 1;
     }
 public:
+    static int copy_key(int, Fl_Text_Editor *ed)
+    {
+        auto *self = static_cast<DndTextEditor *>(ed);
+        if (self->on_copy_) self->on_copy_(false);
+        return 1;
+    }
+
+    static int cut_key(int, Fl_Text_Editor *ed)
+    {
+        auto *self = static_cast<DndTextEditor *>(ed);
+        if (self->on_copy_) self->on_copy_(true);
+        return 1;
+    }
+
+    void set_copy_callback(std::function<void(bool)> cb)
+    {
+        on_copy_ = std::move(cb);
+    }
+
     DndTextEditor(int x, int y, int w, int h,
                   std::function<void(const std::string &)> on_drop)
         : Fl_Text_Editor(x, y, w, h), on_drop_(std::move(on_drop))
     {
         tab_nav(0);
-        // Route every default undo shortcut through the transaction boundaries.
-        for (auto *binding = key_bindings; binding; binding = binding->next)
-            if (binding->function == Fl_Text_Editor::kf_undo) binding->function = EditorTextBuffer::undo_key;
+        // Route the default undo and clipboard shortcuts through our policy.
+        for (auto *binding = key_bindings; binding; binding = binding->next) {
+            if (binding->function == Fl_Text_Editor::kf_undo)
+                binding->function = EditorTextBuffer::undo_key;
+            else if (binding->function == Fl_Text_Editor::kf_copy)
+                binding->function = copy_key;
+            else if (binding->function == Fl_Text_Editor::kf_cut)
+                binding->function = cut_key;
+        }
         add_key_binding('z', FL_CTRL | FL_SHIFT, EditorTextBuffer::redo_key);
         add_key_binding('y', FL_CTRL, EditorTextBuffer::redo_key);
 #ifdef __APPLE__
@@ -1389,7 +1513,7 @@ public:
                                 // Verify original selection is still intact before removing
                                 char *cur_sel = buf->text_range(sel_start, sel_end);
                                 const bool sel_intact = cur_sel && moved == cur_sel;
-                                free(cur_sel);
+                                secure_free_text(cur_sel, static_cast<std::size_t>(sel_end - sel_start));
                                 if (sel_intact) {
                                     buf->remove(sel_start, sel_end);
                                     if (drop_pos >= sel_end)
@@ -1576,6 +1700,11 @@ class EncryptEdWindow : public Fl_Double_Window {
     Fl_Preferences   prefs_{ Fl_Preferences::USER_L, "encryptEd", "encryptEd" };
     Highlighter     *hl_ = nullptr;
     bool             highlight_off_for_size_ = false;
+    bool             locked_ = false;
+    bool             clipboard_has_document_text_ = false;
+    char            *locked_base_ = nullptr;
+    std::size_t      locked_span_ = 0;
+    bool             memory_locked_ = false;
 
     static constexpr int MENU_H    = 25;
     static constexpr int STAT_H    = 20;
@@ -1795,6 +1924,20 @@ class EncryptEdWindow : public Fl_Double_Window {
         int scrollbar = 1;
         prefs_.get("vertical_scrollbar", scrollbar, 1);
         settings_.vertical_scrollbar = scrollbar != 0;
+
+        int lock_minutes = 0;
+        prefs_.get("lock_after_minutes", lock_minutes, 0);
+        settings_.lock_after_minutes =
+            (lock_minutes == 1 || lock_minutes == 5 || lock_minutes == 10 ||
+             lock_minutes == 30) ? lock_minutes : 0;
+
+        int allow_copy = 1;
+        prefs_.get("allow_clipboard", allow_copy, 1);
+        settings_.allow_clipboard = allow_copy != 0;
+
+        int clear_clip = 1;
+        prefs_.get("clear_clipboard_on_exit", clear_clip, 1);
+        settings_.clear_clipboard_on_exit = clear_clip != 0;
     }
 
     void save_settings()
@@ -1811,6 +1954,10 @@ class EncryptEdWindow : public Fl_Double_Window {
         // Keep the legacy key readable by older builds.
         prefs_.set("markdown_highlight", settings_.highlight_mode != 0 ? 1 : 0);
         prefs_.set("vertical_scrollbar", settings_.vertical_scrollbar ? 1 : 0);
+        prefs_.set("lock_after_minutes", settings_.lock_after_minutes);
+        prefs_.set("allow_clipboard", settings_.allow_clipboard ? 1 : 0);
+        prefs_.set("clear_clipboard_on_exit",
+                   settings_.clear_clipboard_on_exit ? 1 : 0);
     }
 
     void apply_settings()
@@ -1877,6 +2024,39 @@ class EncryptEdWindow : public Fl_Double_Window {
         }
     }
 
+    // Lock the document allocation out of swap and core dumps. Re-locking is
+    // skipped while the allocation is unchanged, so edits only pay a syscall
+    // when FLTK reallocates its gap buffer.
+    void refresh_memory_lock()
+    {
+        if (buf_ == nullptr) return;
+        const int len = buf_->length();
+        char *base = len > 0 ? buf_->address(0) : nullptr;
+        char *end  = len > 0 ? buf_->address(len) : nullptr;
+        const std::size_t span = (base != nullptr && end != nullptr && end > base)
+                                     ? static_cast<std::size_t>(end - base)
+                                     : 0;
+        if (base == locked_base_ && span <= locked_span_) return;
+
+        // A reallocation frees the old range; the kernel drops the lock when
+        // those pages are unmapped, so only unlock the range we still own.
+        memory_locked_ = base != nullptr && span != 0 &&
+                         txx_secure_lock(base, span) == TXX_OK;
+        locked_base_ = base;
+        locked_span_ = span;
+        g_memory_locked = memory_locked_;
+    }
+
+    void release_memory_lock()
+    {
+        if (memory_locked_ && locked_base_ != nullptr)
+            txx_secure_unlock(locked_base_, locked_span_);
+        memory_locked_ = false;
+        locked_base_ = nullptr;
+        locked_span_ = 0;
+        g_memory_locked = false;
+    }
+
     void apply_highlight_settings()
     {
         HighlightMode mode = HighlightMode::Off;
@@ -1892,6 +2072,7 @@ class EncryptEdWindow : public Fl_Double_Window {
             hl_ = nullptr;
             editor_->set_ctrl_click_callback(nullptr);
             editor_->set_link_at_callback(nullptr);
+            update_capture_protection();
             return;
         }
 
@@ -1917,6 +2098,154 @@ class EncryptEdWindow : public Fl_Double_Window {
         editor_->set_link_at_callback([this](int pos) -> bool {
             return hl_ && !hl_->url_at(pos).empty();
         });
+        update_capture_protection();
+    }
+
+    // ---- clipboard policy ----
+
+    void do_copy(bool cut)
+    {
+        if (!settings_.allow_clipboard) {
+            fl_beep();
+            return;
+        }
+        if (!buf_->selected()) return;
+        if (cut) Fl_Text_Editor::kf_cut(0, editor_);
+        else     Fl_Text_Editor::kf_copy(0, editor_);
+        clipboard_has_document_text_ = true;
+#ifdef _WIN32
+        mark_clipboard_sensitive();
+#endif
+    }
+
+    void clear_clipboard_if_ours()
+    {
+        if (!settings_.clear_clipboard_on_exit || !clipboard_has_document_text_)
+            return;
+        Fl::copy("", 0, 0);
+        clipboard_has_document_text_ = false;
+    }
+
+    // Keep the window out of screen captures while a document is open.
+    void update_capture_protection()
+    {
+#ifdef _WIN32
+        const bool protect = !locked_ && !filepath_.empty();
+        HWND hwnd = fl_xid(this);
+        if (hwnd != nullptr) {
+            SetWindowDisplayAffinity(
+                hwnd, protect ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE);
+        }
+#endif
+    }
+
+    // ---- lock ----
+
+    void check_idle_lock()
+    {
+        if (locked_ || plugin_running_) return;
+        if (Fl::modal() != nullptr) return;
+        const int minutes = settings_.lock_after_minutes;
+        if (minutes <= 0 || filepath_.empty()) return;
+        if (g_last_activity == 0) {
+            g_last_activity = std::time(nullptr);
+            return;
+        }
+        if (std::time(nullptr) - g_last_activity < minutes * 60) return;
+        // Never discard unsaved work silently.
+        if (dirty_) return;
+        lock_document();
+    }
+
+    static void idle_check_cb(void *v)
+    {
+        auto *w = static_cast<EncryptEdWindow *>(v);
+        w->check_idle_lock();
+        Fl::repeat_timeout(15.0, &EncryptEdWindow::idle_check_cb, v);
+    }
+
+    void do_lock_now()
+    {
+        if (locked_ || filepath_.empty()) {
+            fl_beep();
+            return;
+        }
+        if (dirty_ && !do_save()) return;
+        lock_document();
+    }
+
+    void lock_document()
+    {
+        if (locked_ || filepath_.empty()) return;
+        const std::string path = filepath_;
+        locked_ = true;
+
+        clear_clipboard_if_ours();
+        release_memory_lock();
+        // See load_text(): the style buffer must not outlive the text it
+        // describes while the buffer is emptied.
+        delete hl_;
+        hl_ = nullptr;
+        editor_->buffer(nullptr);
+        buf_->remove_modify_callback(modify_cb, this);
+        // Zero first so the copy FLTK takes while removing is also zeroed.
+        buf_->wipe_in_place();
+        buf_->wipe_all();
+        buf_->add_modify_callback(modify_cb, this);
+        editor_->buffer(buf_);
+
+        password_.clear();
+        filepath_.clear();
+        is_txx_ = false;
+        reset_text_state();
+        set_dirty(false);
+        update_title();
+        update_status();
+        update_capture_protection();
+
+        show_lock_screen(path);
+    }
+
+    void show_lock_screen(const std::string &path)
+    {
+        Fl_Window *dlg = new Fl_Window(430, 160, "EncryptEd - Locked");
+        dlg->set_modal();
+        apply_app_icon(*dlg);
+
+        Fl_Box *msg = new Fl_Box(20, 20, 390, 60,
+            "The document is locked and its text has been wiped from the\n"
+            "editor. Unlock to reopen it.");
+        msg->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+
+        Fl_Return_Button *unlock = new Fl_Return_Button(220, 110, 90, 28, "Unlock");
+        Fl_Button        *quit   = new Fl_Button(320, 110, 90, 28, "Quit");
+        dlg->end();
+
+        bool unlock_clicked = false;
+        bool quit_clicked   = false;
+        unlock->callback([](Fl_Widget *w, void *v) {
+            *static_cast<bool *>(v) = true;
+            w->window()->hide();
+        }, &unlock_clicked);
+        quit->callback([](Fl_Widget *w, void *v) {
+            *static_cast<bool *>(v) = true;
+            w->window()->hide();
+        }, &quit_clicked);
+
+        dlg->show();
+        while (dlg->shown()) Fl::wait();
+        delete dlg;
+
+        if (quit_clicked) {
+            clear_clipboard_if_ours();
+            Fl::hide_all_windows();
+            return;
+        }
+
+        locked_ = false;
+        g_last_activity = std::time(nullptr);
+        if (unlock_clicked) do_open_path(path);
+        update_capture_protection();
     }
 
     void do_preferences()
@@ -2055,7 +2384,7 @@ class EncryptEdWindow : public Fl_Double_Window {
                     p += clen;
                     ++col;
                 }
-                free(seg);
+                secure_free_text(seg, static_cast<std::size_t>(pos - ls));
             }
         }
 
@@ -2254,7 +2583,7 @@ class EncryptEdWindow : public Fl_Double_Window {
     txx_status current_text_for_save(txx_buffer *text)
     {
         char *raw = buf_->text();
-        std::size_t len = std::strlen(raw);
+        std::size_t len = static_cast<std::size_t>(buf_->length());
         txx_newline_style style = text_state_.mixed_newlines
                                 ? TXX_NEWLINE_MIXED
                                 : text_state_.newline_style;
@@ -2263,23 +2592,38 @@ class EncryptEdWindow : public Fl_Double_Window {
         }
         txx_status status = txx_text_convert_newlines(
             reinterpret_cast<const uint8_t *>(raw), len, style, text);
-        secure_free_text(raw);
+        secure_free_text(raw, len);
         return status;
     }
 
     // Load text into the buffer without triggering the modify callback.
     void load_text(const char *text)
     {
+        // Drop the highlighter first: its style buffer is length-synced to the
+        // old text, and FLTK's wrapped-line bookkeeping can loop when the text
+        // is replaced while the style buffer is out of step.
+        delete hl_;
+        hl_ = nullptr;
+        // Detach the display while the old text is zeroed: its pre-delete
+        // callback measures the outgoing text and cannot handle zeroed bytes.
+        editor_->buffer(nullptr);
         buf_->remove_modify_callback(modify_cb, this);
+        // Zero the outgoing document before FLTK copies and frees it, so the
+        // transient copy made by remove() contains no plaintext.
+        release_memory_lock();
+        buf_->wipe_in_place();
         buf_->text(text);
         buf_->add_modify_callback(modify_cb, this);
+        editor_->buffer(buf_);
+        refresh_memory_lock();
     }
 
     std::string buffer_text() const
     {
         char *raw = buf_->text();
+        const std::size_t len = static_cast<std::size_t>(buf_->length());
         std::string text = raw ? raw : "";
-        secure_free_text(raw);
+        secure_free_text(raw, len);
         return text;
     }
 
@@ -2287,7 +2631,7 @@ class EncryptEdWindow : public Fl_Double_Window {
     {
         char *raw = buf_->text_range(start, end);
         std::string text = raw ? raw : "";
-        secure_free_text(raw);
+        secure_free_text(raw, static_cast<std::size_t>(end - start));
         return text;
     }
 
@@ -2479,7 +2823,7 @@ class EncryptEdWindow : public Fl_Double_Window {
 
         char *raw = buf_->text_range(line_start, line_end);
         std::string line = raw ? raw : "";
-        secure_free_text(raw);
+        secure_free_text(raw, static_cast<std::size_t>(line_end - line_start));
 
         const int relative = std::min(std::max(cursor - line_start, 0), line_end - line_start);
         std::string insertion;
@@ -2744,6 +3088,7 @@ class EncryptEdWindow : public Fl_Double_Window {
     void do_open_path(const std::string &path)
     {
         if (!check_unsaved()) return;
+        g_last_activity = std::time(nullptr);
 
         // Read the file once and branch on the magic bytes from the in-memory
         // buffer.  The previous version peeked at the magic via a separate
@@ -2969,6 +3314,7 @@ class EncryptEdWindow : public Fl_Double_Window {
         if ((nIns > 0 || nDel > 0) && !w->dirty_) w->set_dirty(true);
         else if (nIns > 0 || nDel > 0) w->update_status();
         w->update_cursor_pos();
+        w->refresh_memory_lock();
         if (nIns > 0 || nDel > 0) {
             if (w->highlight_off_for_size_) {
                 // Re-enable once the document is small enough again.
@@ -3002,17 +3348,23 @@ class EncryptEdWindow : public Fl_Double_Window {
         else if (!strcmp(lbl, "Open Containing Folder"))     win->do_open_containing_folder();
         else if (!strcmp(lbl, "Save"))                       win->do_save();
         else if (!strcmp(lbl, "Save As..."))                 win->do_save_as();
+        else if (!strcmp(lbl, "Lock Now"))                    win->do_lock_now();
         else if (!strcmp(lbl, "LF (Unix, macOS)"))           win->set_line_endings_choice(TXX_NEWLINE_LF, false);
         else if (!strcmp(lbl, "CRLF (Windows)"))             win->set_line_endings_choice(TXX_NEWLINE_CRLF, false);
         else if (!strcmp(lbl, "CR (Classic Mac)"))           win->set_line_endings_choice(TXX_NEWLINE_CR, false);
         else if (!strcmp(lbl, "Mixed (Preserve)"))           win->set_line_endings_choice(TXX_NEWLINE_MIXED, true);
-        else if (!strcmp(lbl, "Quit"))                       { if (win->check_unsaved()) win->hide(); }
+        else if (!strcmp(lbl, "Quit"))                       {
+            if (win->check_unsaved()) {
+                win->clear_clipboard_if_ours();
+                win->hide();
+            }
+        }
         // Edit
         else if (!strcmp(lbl, "Undo"))        EditorTextBuffer::undo_key(0, win->editor_);
         else if (!strcmp(lbl, "Redo"))        EditorTextBuffer::redo_key(0, win->editor_);
         else if (!strcmp(lbl, "Redo"))        Fl_Text_Editor::kf_redo(0,       win->editor_);
-        else if (!strcmp(lbl, "Cut"))         Fl_Text_Editor::kf_cut(0,        win->editor_);
-        else if (!strcmp(lbl, "Copy"))        Fl_Text_Editor::kf_copy(0,       win->editor_);
+        else if (!strcmp(lbl, "Cut"))         win->do_copy(true);
+        else if (!strcmp(lbl, "Copy"))        win->do_copy(false);
         else if (!strcmp(lbl, "Paste"))       Fl_Text_Editor::kf_paste(0,      win->editor_);
         else if (!strcmp(lbl, "Select All"))  Fl_Text_Editor::kf_select_all(0, win->editor_);
         else if (!strcmp(lbl, "Find"))        win->do_show_find();
@@ -3038,7 +3390,10 @@ class EncryptEdWindow : public Fl_Double_Window {
     static void close_cb(Fl_Widget *, void *v)
     {
         auto *w = static_cast<EncryptEdWindow *>(v);
-        if (!w->plugin_running_ && w->check_unsaved()) w->hide();
+        if (!w->plugin_running_ && w->check_unsaved()) {
+            w->clear_clipboard_if_ours();
+            w->hide();
+        }
     }
 
 public:
@@ -3071,7 +3426,8 @@ public:
         menu_->add("File/Open...",              FL_CTRL + 'o', menu_cb, this);
         menu_->add("File/Open Containing Folder", 0,           menu_cb, this, FL_MENU_DIVIDER);
         menu_->add("File/Save",                 FL_CTRL + 's', menu_cb, this);
-        menu_->add("File/Save As...",           0,             menu_cb, this, FL_MENU_DIVIDER);
+        menu_->add("File/Save As...",           0,             menu_cb, this);
+        menu_->add("File/Lock Now",             FL_CTRL + 'l', menu_cb, this, FL_MENU_DIVIDER);
         menu_->add("File/Line Endings/LF (Unix, macOS)",  0, menu_cb, this, FL_MENU_RADIO);
         menu_->add("File/Line Endings/CRLF (Windows)",    0, menu_cb, this, FL_MENU_RADIO);
         menu_->add("File/Line Endings/CR (Classic Mac)",  0, menu_cb, this, FL_MENU_RADIO);
@@ -3111,6 +3467,7 @@ public:
         editor_ = new DndTextEditor(0, MENU_H, W, H - MENU_H - STAT_H,
                       [this](const std::string &p){ if (!plugin_running_) do_open_path(p); });
         editor_->buffer(buf_);
+        editor_->set_copy_callback([this](bool cut){ do_copy(cut); });
         editor_->wrap_mode(Fl_Text_Editor::WRAP_AT_BOUNDS, 0);
         editor_->textfont(FL_COURIER);
         editor_->textsize(14);
@@ -3144,6 +3501,9 @@ public:
         fr_win_ = new FindReplaceWindow();
         fr_win_->attach(editor_, buf_);
 
+        g_last_activity = std::time(nullptr);
+        Fl::add_timeout(15.0, &EncryptEdWindow::idle_check_cb, this);
+
         load_settings();
         apply_settings();
 
@@ -3157,6 +3517,8 @@ public:
 
     ~EncryptEdWindow()
     {
+        Fl::remove_timeout(&EncryptEdWindow::idle_check_cb, this);
+        release_memory_lock();
         buf_->remove_modify_callback(modify_cb, this);
         delete hl_;
         password_.clear();
@@ -3245,7 +3607,27 @@ int main(int argc, char **argv)
         setrlimit(RLIMIT_CORE, &cores);
     }
 #endif
+#ifdef _WIN32
+    // Do not leak plaintext through crash dialogs, dumps, or debugger prompts.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX |
+                 SEM_NOOPENFILEERRORBOX);
+    HeapSetInformation(GetProcessHeap(), HeapEnableTerminationOnCorruption,
+                       nullptr, 0);
+    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
+    // WER exclusion is best-effort; wer.dll is absent on some systems.
+    if (HMODULE wer = LoadLibraryW(L"wer.dll")) {
+        using AddExcludedFn = HRESULT (WINAPI *)(PCWSTR, WINBOOL);
+        FARPROC proc = GetProcAddress(wer, "WerAddExcludedApplication");
+        AddExcludedFn add = nullptr;
+        static_assert(sizeof(add) == sizeof(proc), "function pointer size");
+        std::memcpy(&add, &proc, sizeof(add));
+        if (add != nullptr) add(L"encryptEd.exe", FALSE);
+        FreeLibrary(wer);
+    }
+#endif
+
     Fl::scheme("gtk+");
+    Fl::add_handler(activity_handler);
     Fl_Window::default_xclass("encryptEd");
     EncryptEdWindow win(900, 600);
     win.show();

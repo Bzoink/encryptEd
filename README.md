@@ -172,7 +172,15 @@ with Page Up/Page Down retained. Click text fields to place the cursor.
   created private (mode 0600); overwriting an existing file preserves its
   permission bits (excluding setuid/setgid/sticky).
 - Decrypted text, keys, and passwords are zeroed after use and core dumps are
-  disabled, but memory is not locked (`mlock`), so it may still be paged to swap.
+  disabled. While a document is open, the editor buffer is locked out of swap
+  and dumps on a best-effort basis (`mlock`/`MADV_DONTDUMP` on Linux,
+  `VirtualLock` on Windows); locking can fail under `RLIMIT_MEMLOCK` or a
+  Windows working-set quota, and the About dialog reports whether it is active.
+- **File → Lock Now** (`Ctrl+L`) saves unsaved changes, wipes the editor
+  buffer, and closes the document; unlocking reopens it. The optional
+  inactivity timeout in Preferences locks only a document with no unsaved
+  changes. Clipboard use can be disabled, copied text is marked sensitive on
+  Windows, and the clipboard can be cleared on exit or lock.
 - Passwords are treated as NUL-terminated C strings: they cannot contain NUL
   bytes, and the CLI caps input at 4095 bytes.
 - Decoding enforces the Argon2 parameter range documented in

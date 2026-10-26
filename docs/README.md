@@ -73,6 +73,7 @@ The `.txx` format is documented in full in `docs/txx-format.md`. In summary:
 | Open Containing Folder | Opens the file's directory in the system file manager; disabled when no file is open |
 | Save (`Ctrl+S`) | Saves to the current path; prompts for password if saving `.txx` for the first time |
 | Save As… | Saves to a new path; format determined by extension (`.txx` = encrypted, anything else = plain UTF-8) |
+| Lock Now (`Ctrl+L`) | Saves unsaved changes, then wipes the editor buffer and closes the document; the unlock dialog reopens the file |
 | Line Endings | Radio submenu: LF, CRLF, CR, Mixed (Preserve) |
 | Quit (`Ctrl+Q`) | Warns about unsaved changes |
 
@@ -101,6 +102,9 @@ Open detects the source encoding automatically and transcodes to UTF-8. Supporte
 
 Menu items that are not applicable in the current context are shown greyed out.
 
+Copy and cut can be disabled under Preferences. When enabled on Windows, copied text is
+marked sensitive so the system skips it in clipboard history and cloud clipboard sync.
+
 ### Settings / Preferences
 
 | Setting | Options |
@@ -111,6 +115,9 @@ Menu items that are not applicable in the current context are shown greyed out.
 | Indent width | 2–8 (active only in spaces mode) |
 | Dark mode | Toggle |
 | Status bar | Character count or file size |
+| Lock after | Never, 1, 5, 10, or 30 minutes of inactivity (only locks a document with no unsaved changes) |
+| Allow copying text | Toggle; when off, Cut and Copy beep and leave the clipboard untouched |
+| Clear clipboard on exit/lock | Toggle; clears the clipboard if this application put document text on it |
 
 Settings are persisted per user via `Fl_Preferences`.
 
@@ -243,14 +250,32 @@ Protected:
 - Saved `.txx` file contents.
 - Accidental file inspection without the password.
 - Tampering with encrypted data, detected through AEAD authentication.
+- Plaintext left in the editor's character allocation when a document is
+  replaced, locked, or the window closes: the allocation, including FLTK's gap,
+  is zeroed before release.
+
+Best-effort mitigations (these can fail and are not security boundaries):
+
+- While a document is open, the editor allocation is locked out of swap and
+  core dumps with `mlock()`/`VirtualLock()` and `MADV_DONTDUMP` where available.
+  Locking can fail under `RLIMIT_MEMLOCK` or a Windows working-set quota; the
+  About dialog reports whether it is active.
+- Core dumps are disabled at startup.
+- On Windows, the window is excluded from screen capture while a document is
+  open, and clipboard content is marked to skip clipboard history and cloud sync.
+- Clipboard use can be disabled, and the clipboard is cleared on exit or lock
+  when it still holds text copied by this application.
 
 Not protected in the basic version:
 
-- Live editor buffer in process memory.
-- Clipboard contents.
-- Swap files.
-- Crash dumps.
-- Screen capture.
+- The live editor buffer while a document is open: other processes running as
+  the same user, debuggers, and the operating system can still read it.
+- FLTK's internal undo/redo action buffers and the transient copies it makes
+  while editing; these are owned by the toolkit and may retain fragments until
+  the process exits.
+- Text already pasted into another application.
+- Swap or crash dumps when locking was unavailable or before it took effect.
+- Screen capture on platforms other than Windows.
 - Keyloggers.
 - A compromised operating system.
 

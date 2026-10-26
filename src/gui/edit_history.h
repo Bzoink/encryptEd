@@ -3,6 +3,7 @@
 
 #include <FL/Fl_Text_Buffer.H>
 #include <FL/Fl_Text_Editor.H>
+#include "gui/secure_text.h"
 #include <memory>
 #include <vector>
 #include <utility>
@@ -54,12 +55,52 @@ class EditorTextBuffer : public Fl_Text_Buffer {
 
 public:
     EditorTextBuffer() { add_modify_callback(modified, this); }
-    ~EditorTextBuffer() { remove_modify_callback(modified, this); }
+
+    // Wipe the live allocation and release stored history snapshots before
+    // the base class frees them.
+    ~EditorTextBuffer()
+    {
+        remove_modify_callback(modified, this);
+        wipe_history();
+        gui_wipe_text_buffer(*this);
+    }
 
     using Fl_Text_Buffer::text;
     void text(const char *value)
     {
+        wipe_history();
+        // Empty through the normal path before zeroing so the display never
+        // measures a zeroed buffer (see gui_clear_text_buffer).
+        const int len = length();
+        char *base = len > 0 ? address(0) : nullptr;
+        char *end  = len > 0 ? address(len) : nullptr;
+        const std::size_t span = (base != nullptr && end != nullptr && end > base)
+                                     ? static_cast<std::size_t>(end - base)
+                                     : 0;
+        if (len > 0) remove(0, len);
+        if (span != 0) txx_secure_zero(base, span);
         Fl_Text_Buffer::text(value);
+        past_.clear(); future_.clear();
+        EditorTextBuffer empty;
+        swap_history(empty);
+    }
+
+    // Destroy stored history snapshots; their destructors wipe the buffers.
+    void wipe_history() { past_.clear(); future_.clear(); }
+
+    // Zero the live character allocation without changing the reported
+    // length. Callers must detach any Fl_Text_Display first: FLTK measures the
+    // outgoing text in a pre-delete callback, and zeroed bytes are not valid
+    // UTF-8. Used before replacing or emptying the buffer so the copies FLTK
+    // makes while deleting contain zeros rather than plaintext.
+    void wipe_in_place() { gui_wipe_text_buffer(*this); }
+
+    // Wipe the document text and all stored history. The caller is responsible
+    // for detaching modify callbacks if the empty state should not be reported.
+    void wipe_all()
+    {
+        wipe_history();
+        gui_clear_text_buffer(*this);
         past_.clear(); future_.clear();
         EditorTextBuffer empty;
         swap_history(empty);
