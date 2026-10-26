@@ -49,7 +49,7 @@ extern "C" {
 #include "tui/plugin_dialog.h"
 #include "tui/edit_buffer.h"
 #include "tui/md_parse.h"
-#include "tui/syn_parse.h"
+#include "highlight/syn_parse.h"
 #include "tui/theme.h"
 
 using namespace ftxui;
@@ -188,7 +188,7 @@ public:
         SynState syn_st{};
         if (syn_lang_ != SynLang::None) {
             for (int l = 0; l < scroll_top_ && l < total; ++l)
-                syn_parse_line(buffer_.line(l), syn_st, syn_lang_);
+                syn_parse_line(buffer_.line(l), syn_st, syn_lang_, syn_runs_);
         }
 
         for (int i = 0; i < rows; ++i) {
@@ -550,7 +550,7 @@ private:
         if (line_in_sel) {
             // Selection rendering: update syn state but skip highlighting.
             if (syn_lang_ != SynLang::None)
-                syn_parse_line(ln, syn_st, syn_lang_);
+                syn_parse_line(ln, syn_st, syn_lang_, syn_runs_);
             int from = (line_idx == sel_a.line) ? sel_a.col : 0;
             int to   = (line_idx == sel_b.line) ? sel_b.col : buffer_.line_length(line_idx);
             return render_selection_line(ln, from, to, cols);
@@ -589,8 +589,8 @@ private:
 
         if (settings_.syn_highlight) {
             if (syn_lang_ != SynLang::None) {
-                auto runs = syn_parse_line(ln, syn_st, syn_lang_);
-                add_segs(runs, [this](SynStyle s){ return syn_color(s); });
+                syn_parse_line(ln, syn_st, syn_lang_, syn_runs_);
+                add_segs(syn_runs_, [this](SynStyle s){ return syn_color(s); });
             } else {
                 auto runs = md_parse_line(ln, code_state(line_idx));
                 add_segs(runs, [this](MdStyle s){ return style_color(s); });
@@ -2335,6 +2335,7 @@ private:
     int                scroll_top_ = 0;
     int                scroll_left_ = 0;
     SynLang            syn_lang_   = SynLang::None;
+    std::vector<SynRun> syn_runs_;
 
     enum class DialogKind { None, Prompt, Confirm, Alert };
     DialogKind  dialog_kind_  = DialogKind::None;

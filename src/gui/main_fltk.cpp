@@ -62,7 +62,7 @@ extern "C" {
 #include "app/file_format.h"
 #include "app/size_format.h"
 #include "gui/text_transform.h"
-#include "gui/md_highlight.h"
+#include "gui/highlight.h"
 #include "gui/plugin_buffer.h"
 #include "gui/plugin_dialog.h"
 
@@ -593,7 +593,8 @@ struct AppSettings {
     Fl_Font     font               = FL_COURIER;
     Fl_Fontsize size               = 14;
     bool        dark_mode          = false;
-    bool        markdown_highlight = true;
+    int         highlight_mode     = 1;   // 0 off, 1 auto, 2 markdown, 3 language
+    SynLang     highlight_lang     = SynLang::None;
     bool        vertical_scrollbar = true;
     IndentMode  indent_mode        = INDENT_TABS;
     int         indent_width       = 4;
@@ -602,6 +603,48 @@ struct AppSettings {
 
 static constexpr int kIndentWidthMin = 2;
 static constexpr int kIndentWidthMax = 8;
+
+// Above this size, per-keystroke code highlighting costs more than it is
+// worth; the preference stays unchanged and the status bar explains why.
+static constexpr int kMaxHighlightBytes = 2 * 1024 * 1024;
+
+// Languages offered by the highlighting preference. Markdown has its own
+// entry in the choice, so it is omitted here.
+struct HighlightLangEntry { const char *label; SynLang lang; };
+static const HighlightLangEntry kHighlightLangs[] = {
+    {"C", SynLang::C},
+    {"C++", SynLang::Cpp},
+    {"Python", SynLang::Python},
+    {"Shell", SynLang::Shell},
+    {"CMake", SynLang::CMake},
+    {"Rust", SynLang::Rust},
+    {"JavaScript", SynLang::JavaScript},
+    {"HTML", SynLang::HTML},
+    {"CSS", SynLang::CSS},
+    {"PowerShell", SynLang::PowerShell},
+    {"Go", SynLang::Go},
+    {"PHP", SynLang::PHP},
+    {"JSON", SynLang::JSON},
+    {"SQL", SynLang::SQL},
+    {"Dockerfile", SynLang::Dockerfile},
+    {"YAML", SynLang::YAML},
+    {"XML", SynLang::XML},
+    {"Java", SynLang::Java},
+    {"C#", SynLang::CSharp},
+    {"Makefile", SynLang::Makefile},
+    {"Batch", SynLang::Batch},
+    {"Ruby", SynLang::Ruby},
+    {"Perl", SynLang::Perl},
+    {"TOML", SynLang::TOML},
+    {"INI", SynLang::INI},
+    {"R", SynLang::R},
+    {"Swift", SynLang::Swift},
+    {"Kotlin", SynLang::Kotlin},
+    {"Lua", SynLang::Lua},
+    {"Assembly", SynLang::Asm},
+};
+static constexpr int kHighlightLangCount =
+    static_cast<int>(sizeof(kHighlightLangs) / sizeof(kHighlightLangs[0]));
 
 struct FontEntry { std::string label; Fl_Font font; };
 static std::vector<FontEntry> g_mono_fonts;
@@ -833,7 +876,7 @@ class PrefsDialog : public Fl_Window {
     Fl_Box          *indent_width_label_;
     Fl_Spinner      *indent_width_spin_;
     Fl_Check_Button *dark_btn_;
-    Fl_Check_Button *md_btn_;
+    Fl_Choice       *hl_choice_;
     Fl_Check_Button *scrollbar_btn_;
     Fl_Choice       *status_count_choice_;
     AppSettings      result_;
@@ -863,7 +906,17 @@ class PrefsDialog : public Fl_Window {
                                 : AppSettings::INDENT_TABS;
         d->result_.indent_width = clamp_indent_width(static_cast<int>(d->indent_width_spin_->value()));
         d->result_.dark_mode          = d->dark_btn_->value() != 0;
-        d->result_.markdown_highlight = d->md_btn_->value() != 0;
+        const int hi = d->hl_choice_->value();
+        if (hi <= 2) {
+            d->result_.highlight_mode = hi;
+            d->result_.highlight_lang = SynLang::None;
+        } else {
+            const Fl_Menu_Item *it = d->hl_choice_->mvalue();
+            d->result_.highlight_mode = 3;
+            d->result_.highlight_lang = it
+                ? static_cast<SynLang>(reinterpret_cast<intptr_t>(it->user_data()))
+                : SynLang::None;
+        }
         d->result_.vertical_scrollbar = d->scrollbar_btn_->value() != 0;
         d->result_.status_count = d->status_count_choice_->value() == 1
                                 ? AppSettings::STATUS_COUNT_BYTES
@@ -952,9 +1005,34 @@ public:
         dark_btn_ = new Fl_Check_Button(108, 158, 190, 24, "Dark mode");
         dark_btn_->value(current.dark_mode ? 1 : 0);
 
-        // Markdown highlighting
-        md_btn_ = new Fl_Check_Button(108, 194, 190, 24, "Markdown highlighting");
-        md_btn_->value(current.markdown_highlight ? 1 : 0);
+        // Syntax highlighting mode
+        Fl_Box *hl = new Fl_Box(10, 194, 90, 24, "Highlighting:");
+        hl->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
+        hl_choice_ = new Fl_Choice(108, 194, 190, 24);
+        hl_choice_->add("Off");
+        hl_choice_->add("Auto (file type)");
+        hl_choice_->add("Markdown");
+        for (int i = 0; i < kHighlightLangCount; ++i) {
+            hl_choice_->add(kHighlightLangs[i].label, 0, nullptr,
+                            reinterpret_cast<void *>(
+                                static_cast<intptr_t>(kHighlightLangs[i].lang)),
+                            i == 0 ? FL_MENU_DIVIDER : 0);
+        }
+        {
+            int sel = 1;
+            if (current.highlight_mode == 0) sel = 0;
+            else if (current.highlight_mode == 2) sel = 2;
+            else if (current.highlight_mode == 3) {
+                sel = 1;
+                for (int i = 0; i < kHighlightLangCount; ++i) {
+                    if (kHighlightLangs[i].lang == current.highlight_lang) {
+                        sel = 3 + i;
+                        break;
+                    }
+                }
+            }
+            hl_choice_->value(sel);
+        }
 
         // Status bar counter mode
         Fl_Box *scl = new Fl_Box(10, 230, 90, 24, "Status bar:");
@@ -1496,7 +1574,8 @@ class EncryptEdWindow : public Fl_Double_Window {
     AppSettings      settings_;
     std::string      pending_font_name_{"Courier"};
     Fl_Preferences   prefs_{ Fl_Preferences::USER_L, "encryptEd", "encryptEd" };
-    MdHighlighter   *md_hl_ = nullptr;
+    Highlighter     *hl_ = nullptr;
+    bool             highlight_off_for_size_ = false;
 
     static constexpr int MENU_H    = 25;
     static constexpr int STAT_H    = 20;
@@ -1701,9 +1780,18 @@ class EncryptEdWindow : public Fl_Double_Window {
                                ? static_cast<AppSettings::StatusCount>(status_count)
                                : AppSettings::STATUS_COUNT_CHARS;
 
-        int md_hl = 1;
-        prefs_.get("markdown_highlight", md_hl, md_hl);
-        settings_.markdown_highlight = (md_hl != 0);
+        int hl_mode = -1;
+        prefs_.get("highlight_mode", hl_mode, hl_mode);
+        if (hl_mode < 0 || hl_mode > 3) {
+            // Migrate the pre-1.3 boolean preference.
+            int md_hl = 1;
+            prefs_.get("markdown_highlight", md_hl, md_hl);
+            hl_mode = md_hl ? 1 : 0;
+        }
+        settings_.highlight_mode = hl_mode;
+        int hl_lang = static_cast<int>(SynLang::None);
+        prefs_.get("highlight_lang", hl_lang, hl_lang);
+        settings_.highlight_lang = static_cast<SynLang>(hl_lang);
         int scrollbar = 1;
         prefs_.get("vertical_scrollbar", scrollbar, 1);
         settings_.vertical_scrollbar = scrollbar != 0;
@@ -1718,7 +1806,10 @@ class EncryptEdWindow : public Fl_Double_Window {
         prefs_.set("indent_mode", static_cast<int>(settings_.indent_mode));
         prefs_.set("indent_width", settings_.indent_width);
         prefs_.set("status_count", static_cast<int>(settings_.status_count));
-        prefs_.set("markdown_highlight", settings_.markdown_highlight ? 1 : 0);
+        prefs_.set("highlight_mode", settings_.highlight_mode);
+        prefs_.set("highlight_lang", static_cast<int>(settings_.highlight_lang));
+        // Keep the legacy key readable by older builds.
+        prefs_.set("markdown_highlight", settings_.highlight_mode != 0 ? 1 : 0);
         prefs_.set("vertical_scrollbar", settings_.vertical_scrollbar ? 1 : 0);
     }
 
@@ -1752,34 +1843,80 @@ class EncryptEdWindow : public Fl_Double_Window {
         redraw();
         update_status();
 
-        // Markdown highlighter: create, destroy, or rebuild depending on setting
-        if (settings_.markdown_highlight) {
-            if (!md_hl_) {
-                md_hl_ = new MdHighlighter();
-                md_hl_->attach(editor_, buf_);
+        apply_highlight_settings();
+    }
+
+    // Resolve the highlighting preference against the current file name.
+    // Auto detection is off for untitled buffers until the first save.
+    void resolve_highlight_mode(HighlightMode &mode, SynLang &lang) const
+    {
+        lang = SynLang::None;
+        switch (settings_.highlight_mode) {
+        case 0:
+            mode = HighlightMode::Off;
+            return;
+        case 2:
+            mode = HighlightMode::Markdown;
+            return;
+        case 3:
+            lang = settings_.highlight_lang;
+            if (lang == SynLang::Markdown) mode = HighlightMode::Markdown;
+            else if (lang == SynLang::None) mode = HighlightMode::Off;
+            else mode = HighlightMode::Code;
+            return;
+        default:
+            if (filepath_.empty()) {
+                mode = HighlightMode::Off;
+                return;
             }
-            md_hl_->rebuild_style_table(settings_.font, settings_.size,
-                                         settings_.dark_mode);
-            md_hl_->rehighlight_all();
-            editor_->set_ctrl_click_callback([this](int pos) -> bool {
-                std::string url = md_hl_->url_at(pos);
-                if (url.empty()) return false;
-                if (!is_safe_external_uri(url)) {
-                    fl_beep();
-                    return false;
-                }
-                fl_open_uri(url.c_str());
-                return true;
-            });
-            editor_->set_link_at_callback([this](int pos) -> bool {
-                return !md_hl_->url_at(pos).empty();
-            });
-        } else {
-            delete md_hl_;
-            md_hl_ = nullptr;
+            lang = syn_detect(filepath_);
+            if (lang == SynLang::Markdown) mode = HighlightMode::Markdown;
+            else if (lang == SynLang::None) mode = HighlightMode::Off;
+            else mode = HighlightMode::Code;
+            return;
+        }
+    }
+
+    void apply_highlight_settings()
+    {
+        HighlightMode mode = HighlightMode::Off;
+        SynLang lang = SynLang::None;
+        resolve_highlight_mode(mode, lang);
+
+        highlight_off_for_size_ =
+            mode == HighlightMode::Code && buf_->length() > kMaxHighlightBytes;
+        if (highlight_off_for_size_) mode = HighlightMode::Off;
+
+        if (mode == HighlightMode::Off) {
+            delete hl_;
+            hl_ = nullptr;
             editor_->set_ctrl_click_callback(nullptr);
             editor_->set_link_at_callback(nullptr);
+            return;
         }
+
+        if (!hl_) {
+            hl_ = new Highlighter();
+            hl_->attach(editor_, buf_);
+        }
+        hl_->set_mode(mode, lang);
+        hl_->rebuild_style_table(settings_.font, settings_.size,
+                                 settings_.dark_mode);
+        hl_->rehighlight_all();
+
+        editor_->set_ctrl_click_callback([this](int pos) -> bool {
+            std::string url = hl_ ? hl_->url_at(pos) : std::string();
+            if (url.empty()) return false;
+            if (!is_safe_external_uri(url)) {
+                fl_beep();
+                return false;
+            }
+            fl_open_uri(url.c_str());
+            return true;
+        });
+        editor_->set_link_at_callback([this](int pos) -> bool {
+            return hl_ && !hl_->url_at(pos).empty();
+        });
     }
 
     void do_preferences()
@@ -1819,6 +1956,7 @@ class EncryptEdWindow : public Fl_Double_Window {
     void update_status()
     {
         std::string s = format_status_counter();
+        if (highlight_off_for_size_) s += "  [highlighting off: large file]";
         if (is_txx_) s += "  [encrypted]";
         if (dirty_)  s += "  [unsaved changes]";
         status_->copy_label(s.c_str());
@@ -2108,6 +2246,7 @@ class EncryptEdWindow : public Fl_Double_Window {
         is_txx_ = false;
         set_text_state(info);
         set_dirty(false);
+        apply_highlight_settings();
         maybe_warn_loaded_plain_text(path, info);
         return true;
     }
@@ -2134,7 +2273,6 @@ class EncryptEdWindow : public Fl_Double_Window {
         buf_->remove_modify_callback(modify_cb, this);
         buf_->text(text);
         buf_->add_modify_callback(modify_cb, this);
-        if (md_hl_) md_hl_->rehighlight_all();
     }
 
     std::string buffer_text() const
@@ -2398,6 +2536,7 @@ class EncryptEdWindow : public Fl_Double_Window {
         is_txx_ = false;
         reset_text_state();
         set_dirty(false);
+        apply_highlight_settings();
     }
 
     void do_open()
@@ -2583,6 +2722,7 @@ class EncryptEdWindow : public Fl_Double_Window {
                 password_.set(pw);
                 wipe_string(pw);
                 set_dirty(false);
+                apply_highlight_settings();
             } else {
                 wipe_string(pw);
             }
@@ -2594,6 +2734,7 @@ class EncryptEdWindow : public Fl_Double_Window {
                 is_txx_   = false;
                 password_.clear();
                 set_dirty(false);
+                apply_highlight_settings();
             }
             return ok;
         }
@@ -2642,6 +2783,7 @@ class EncryptEdWindow : public Fl_Double_Window {
             filepath_ = path;
             is_txx_   = true;
             set_dirty(false);
+            apply_highlight_settings();
         } else {
             // Plain text with legacy encoding detection and UTF-8 conversion.
             bool ok = load_plain_text_bytes(raw.data, raw.len, path, "open");
@@ -2827,8 +2969,23 @@ class EncryptEdWindow : public Fl_Double_Window {
         if ((nIns > 0 || nDel > 0) && !w->dirty_) w->set_dirty(true);
         else if (nIns > 0 || nDel > 0) w->update_status();
         w->update_cursor_pos();
-        if (w->md_hl_ && (nIns > 0 || nDel > 0))
-            w->md_hl_->on_modify(pos, nIns, nDel);
+        if (nIns > 0 || nDel > 0) {
+            if (w->highlight_off_for_size_) {
+                // Re-enable once the document is small enough again.
+                if (w->buf_->length() <= kMaxHighlightBytes) {
+                    w->apply_highlight_settings();
+                    w->update_status();
+                }
+            } else if (w->hl_) {
+                if (w->hl_->mode() == HighlightMode::Code &&
+                    w->buf_->length() > kMaxHighlightBytes) {
+                    w->apply_highlight_settings();
+                    w->update_status();
+                } else {
+                    w->hl_->on_modify(pos, nIns, nDel);
+                }
+            }
+        }
     }
 
     static void menu_cb(Fl_Widget *, void *v)
@@ -3001,7 +3158,7 @@ public:
     ~EncryptEdWindow()
     {
         buf_->remove_modify_callback(modify_cb, this);
-        delete md_hl_;
+        delete hl_;
         password_.clear();
         delete fr_win_;
         editor_->buffer(nullptr);

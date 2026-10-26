@@ -20,7 +20,9 @@ The codebase has two layers.
 
 **Core** (`src/core/`, `src/platform/`) is pure C17 and owns all format, crypto, compression, and text handling. It has no GUI dependency.
 
-**GUI** (`src/gui/main_fltk.cpp`) is a single C++17 file built on FLTK 1.5. It calls into the core through the public C headers and adds no application logic of its own beyond UI interaction.
+**GUI** (`src/gui/main_fltk.cpp`, with the highlighter in `src/gui/highlight.cpp`) is
+built on FLTK 1.5. It calls into the core through the public C headers and adds no
+application logic of its own beyond UI interaction.
 
 ### Core modules
 
@@ -143,6 +145,9 @@ src/
   core/              — C17 core library
   gui/
     main_fltk.cpp    — FLTK GUI (single file)
+    highlight.h/.cpp — FLTK style-buffer highlighter (Markdown and code modes)
+    secure_text.h    — wiping free for Fl_Text_Buffer text copies
+  highlight/         — shared tokenizer and incremental rescan engine
   tui/               — etui terminal UI (FTXUI)
   platform/          — OS-specific CSPRNG and secure memory
 tests/
@@ -218,12 +223,16 @@ in the same installer/bundle as the GUI, and lives under `src/tui/`:
 |---|---|
 | `main_tui.cpp` | App entry, `ScreenInteractive` loop, menu/command dispatch, dialogs, theming |
 | `edit_buffer.h/.cpp` | Document model: storage, cursor, selection, undo/redo — no FTXUI dependency |
-| `md_parse.h/.cpp`, `syn_parse.h/.cpp` | Markdown/syntax parsing, emitting styled runs for terminal rendering |
+| `md_parse.h/.cpp` | Markdown parsing, emitting styled runs for terminal rendering |
 | `plugin_buffer.h`, `plugin_dialog.h` | Lua document adapter and modal terminal dialogs |
 | `clipboard.h/.cpp` | OSC 52 + OS clipboard bridges |
 | `config.h/.cpp` | Load/save preferences |
 
 `EditBuffer` is UI-agnostic and unit-tested independently of FTXUI (`tests/tui/edit_buffer_tests.cpp`), mirroring how `text_transform` is tested without FLTK.
+
+The language tokenizer lives in `src/highlight/` (`syn_parse`) and is shared by both
+front ends. `rescan.cpp` adds checkpoint-based incremental rescans so multi-line
+constructs stay correct while typing; `tests/highlight/` covers both units.
 
 ## Security Model
 

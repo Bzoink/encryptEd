@@ -1,4 +1,5 @@
-#include "gui/md_highlight.h"
+#include "gui/highlight.h"
+#include "gui/secure_text.h"
 #include <FL/Fl.H>
 #include <FL/fl_draw.H>
 #include <algorithm>
@@ -9,7 +10,7 @@
 
 // ---------------------------------------------------------------------------
 // Style byte definitions
-// The char value minus 'A' is the index into MdHighlighter::table_[].
+// The char value minus 'A' is the index into Highlighter::table_[].
 // ---------------------------------------------------------------------------
 static constexpr char S_PLAIN   = 'A';  // plain text
 static constexpr char S_HEADING = 'B';  // # Heading
@@ -28,7 +29,7 @@ static constexpr char S_SPECIAL = 'J';  // ~~strikeout~~  ---HR---
 // `plain` and we write over positions that have markup.
 // Priority (highest first): code spans, bold, italic, strikethrough, links.
 // ---------------------------------------------------------------------------
-void MdHighlighter::scan_inline(const char *text, int len, char *out, char plain)
+void Highlighter::scan_inline(const char *text, int len, char *out, char plain)
 {
     // ---- Phase 1: code spans (`...` and ``...``) ---------------------------
     {
@@ -156,7 +157,7 @@ void MdHighlighter::scan_inline(const char *text, int len, char *out, char plain
 // ---------------------------------------------------------------------------
 // Full-document scanner
 // ---------------------------------------------------------------------------
-void MdHighlighter::scan(const char *text, int len, char *out)
+void Highlighter::scan(const char *text, int len, char *out)
 {
     std::memset(out, S_PLAIN, static_cast<std::size_t>(len));
 
@@ -366,14 +367,14 @@ void MdHighlighter::scan(const char *text, int len, char *out)
 }
 
 // ---------------------------------------------------------------------------
-// MdHighlighter — public methods
+// Highlighter — public methods
 // ---------------------------------------------------------------------------
-MdHighlighter::~MdHighlighter()
+Highlighter::~Highlighter()
 {
     detach();
 }
 
-void MdHighlighter::attach(Fl_Text_Editor *ed, Fl_Text_Buffer *buf)
+void Highlighter::attach(Fl_Text_Editor *ed, Fl_Text_Buffer *buf)
 {
     detach();
     editor_    = ed;
@@ -387,9 +388,13 @@ void MdHighlighter::attach(Fl_Text_Editor *ed, Fl_Text_Buffer *buf)
     }
 }
 
-void MdHighlighter::detach()
+void Highlighter::detach()
 {
     cancel_timer();
+    pending_pos_ = -1;
+    pending_end_ = 0;
+    rescanner_.reset();
+    code_styles_.clear();
     if (editor_) {
         editor_->highlight_data(nullptr, nullptr, 0, 0, nullptr, nullptr);
         editor_ = nullptr;
@@ -401,9 +406,29 @@ void MdHighlighter::detach()
     buf_ = nullptr;
 }
 
-void MdHighlighter::rebuild_style_table(Fl_Font font, Fl_Fontsize size, bool dark_mode)
+void Highlighter::rebuild_style_table(Fl_Font font, Fl_Fontsize size, bool dark_mode)
 {
+    font_ = font;
+    size_ = size;
+    dark_ = dark_mode;
     if (!editor_ || !style_buf_) return;
+
+    if (mode_ == HighlightMode::Code) {
+        build_code_table();
+        table_size_ = 6;
+    } else {
+        build_markdown_table();
+        table_size_ = N_MD_STYLES;
+    }
+    editor_->highlight_data(style_buf_, table_, table_size_, S_PLAIN,
+                            nullptr, nullptr);
+    editor_->redraw();
+}
+
+void Highlighter::build_markdown_table()
+{
+    const Fl_Font font = font_;
+    const Fl_Fontsize size = size_;
 
     // Derive bold / italic variants.
     // FLTK built-in families (Helvetica=0, Courier=4, Times=8) use bit 0 for bold
@@ -417,7 +442,7 @@ void MdHighlighter::rebuild_style_table(Fl_Font font, Fl_Fontsize size, bool dar
              code_col, fence_col, link_col, quote_col,
              list_col, special_col;
 
-    if (dark_mode) {
+    if (dark_) {
         plain_col   = fl_rgb_color(220, 220, 220);
         heading_col = fl_rgb_color( 86, 156, 214);   // #569cd6 – VS Code keyword blue
         strong_col  = fl_rgb_color(255, 255, 255);
@@ -441,28 +466,98 @@ void MdHighlighter::rebuild_style_table(Fl_Font font, Fl_Fontsize size, bool dar
         special_col = fl_rgb_color(150, 150, 150);
     }
 
-    // Indices: style char - 'A'
-    table_[0] = { plain_col,   font,        size, 0, FL_BACKGROUND_COLOR };  // A plain
-    table_[1] = { heading_col, bold_font,   size, 0, FL_BACKGROUND_COLOR };  // B heading
-    table_[2] = { strong_col,  bold_font,   size, 0, FL_BACKGROUND_COLOR };  // C **bold**
-    table_[3] = { em_col,      italic_font, size, 0, FL_BACKGROUND_COLOR };  // D *italic*
-    table_[4] = { code_col,    font,        size, 0, FL_BACKGROUND_COLOR };  // E `code`
-    table_[5] = { fence_col,   font,        size, 0, FL_BACKGROUND_COLOR };  // F ~~~ block
-    table_[6] = { link_col,    font,        size, 0, FL_BACKGROUND_COLOR };  // G [link]
-    table_[7] = { quote_col,   font,        size, 0, FL_BACKGROUND_COLOR };  // H > quote
-    table_[8] = { list_col,    bold_font,   size, 0, FL_BACKGROUND_COLOR };  // I list marker
-    table_[9] = { special_col, font,        size, 0, FL_BACKGROUND_COLOR };  // J ~~strike~~ / HR
+    // Indices: style char - 'A'. Inline code gets a background behind the
+    // span; fenced blocks extend it to the end of the line.
+    const Fl_Color code_bg = dark_ ? fl_rgb_color(48, 48, 48)
+                                   : fl_rgb_color(240, 240, 240);
 
-    editor_->highlight_data(style_buf_, table_, N_STYLES, S_PLAIN, nullptr, nullptr);
-    editor_->redraw();
+    table_[0] = { plain_col,   font,        size, 0,
+                  FL_BACKGROUND_COLOR };                                    // A plain
+    table_[1] = { heading_col, bold_font,   size, 0,
+                  FL_BACKGROUND_COLOR };                                    // B heading
+    table_[2] = { strong_col,  bold_font,   size, 0,
+                  FL_BACKGROUND_COLOR };                                    // C **bold**
+    table_[3] = { em_col,      italic_font, size, 0,
+                  FL_BACKGROUND_COLOR };                                    // D *italic*
+    table_[4] = { code_col,    font,        size,
+                  Fl_Text_Display::ATTR_BGCOLOR, code_bg };                 // E `code`
+    table_[5] = { fence_col,   font,        size,
+                  Fl_Text_Display::ATTR_BGCOLOR_EXT, code_bg };             // F ~~~ block
+    table_[6] = { link_col,    font,        size,
+                  Fl_Text_Display::ATTR_UNDERLINE,
+                  FL_BACKGROUND_COLOR };                                    // G [link]
+    table_[7] = { quote_col,   font,        size, 0,
+                  FL_BACKGROUND_COLOR };                                    // H > quote
+    table_[8] = { list_col,    bold_font,   size, 0,
+                  FL_BACKGROUND_COLOR };                                    // I list marker
+    table_[9] = { special_col, font,        size,
+                  Fl_Text_Display::ATTR_STRIKE_THROUGH,
+                  FL_BACKGROUND_COLOR };                                    // J ~~strike~~ / HR
 }
 
-void MdHighlighter::rehighlight_all()
+void Highlighter::build_code_table()
+{
+    const Fl_Font font = font_;
+    const Fl_Fontsize size = size_;
+
+    const bool   has_variants = (font <= 11 && (font & 3) == 0);
+    const Fl_Font bold_font   = has_variants ? static_cast<Fl_Font>(font | 1) : font;
+    const Fl_Font italic_font = has_variants ? static_cast<Fl_Font>(font | 2) : font;
+
+    Fl_Color plain_col, keyword_col, string_col, comment_col,
+             number_col, preproc_col;
+
+    if (dark_) {
+        plain_col   = fl_rgb_color(212, 212, 212);
+        keyword_col = fl_rgb_color( 86, 156, 214);
+        string_col  = fl_rgb_color(206, 145, 120);
+        comment_col = fl_rgb_color(106, 153,  85);
+        number_col  = fl_rgb_color(181, 206, 168);
+        preproc_col = fl_rgb_color(197, 134, 192);
+    } else {
+        plain_col   = FL_BLACK;
+        keyword_col = fl_rgb_color( 20,  80, 180);
+        string_col  = fl_rgb_color(160,  40,  40);
+        comment_col = fl_rgb_color(  0, 120,   0);
+        number_col  = fl_rgb_color(128,   0, 128);
+        preproc_col = fl_rgb_color(150,  60, 150);
+    }
+
+    // Style char = 'A' + static_cast<int>(SynStyle).
+    table_[0] = { plain_col,   font,        size, 0, FL_BACKGROUND_COLOR };  // Normal
+    table_[1] = { keyword_col, bold_font,   size, 0, FL_BACKGROUND_COLOR };  // Keyword
+    table_[2] = { string_col,  font,        size, 0, FL_BACKGROUND_COLOR };  // String
+    table_[3] = { comment_col, italic_font, size, 0, FL_BACKGROUND_COLOR };  // Comment
+    table_[4] = { number_col,  font,        size, 0, FL_BACKGROUND_COLOR };  // Number
+    table_[5] = { preproc_col, font,        size, 0, FL_BACKGROUND_COLOR };  // Preproc
+}
+
+void Highlighter::set_mode(HighlightMode mode, SynLang lang)
+{
+    const SynLang effective = (mode == HighlightMode::Code) ? lang : SynLang::None;
+    if (mode == mode_ && effective == lang_) return;
+
+    mode_ = mode;
+    lang_ = effective;
+    cancel_timer();
+    pending_pos_ = -1;
+    pending_end_ = 0;
+    rescanner_.set_language(lang_);
+    rescanner_.reset();
+    code_styles_.clear();
+}
+
+void Highlighter::rehighlight_all()
 {
     if (!buf_ || !style_buf_) return;
     cancel_timer();
     pending_pos_ = -1;
     pending_end_ = 0;
+
+    if (mode_ == HighlightMode::Code) {
+        scan_code_all();
+        return;
+    }
 
     char *text = buf_->text();
     const int tlen = buf_->length();
@@ -470,18 +565,103 @@ void MdHighlighter::rehighlight_all()
     if (tlen == 0) {
         if (style_buf_->length() > 0)
             style_buf_->replace(0, style_buf_->length(), "");
-        std::free(text);
+        gui_secure_free_text(text, static_cast<std::size_t>(tlen));
         return;
     }
 
     std::string style(static_cast<std::size_t>(tlen), S_PLAIN);
-    scan(text, tlen, style.data());
-    std::free(text);
+    if (mode_ == HighlightMode::Markdown) scan(text, tlen, style.data());
+    gui_secure_free_text(text, static_cast<std::size_t>(tlen));
 
     style_buf_->replace(0, style_buf_->length(), style.c_str());
 }
 
-void MdHighlighter::on_modify(int pos, int nIns, int nDel)
+void Highlighter::scan_code_all()
+{
+    const int tlen = buf_->length();
+    rescanner_.set_language(lang_);
+
+    if (tlen <= 0) {
+        code_styles_.clear();
+        rescanner_.reset();
+        if (style_buf_->length() > 0)
+            style_buf_->replace(0, style_buf_->length(), "");
+        return;
+    }
+
+    char *raw = buf_->text();
+    if (raw == nullptr) return;
+    const std::string_view text(raw, static_cast<std::size_t>(tlen));
+
+    rescanner_.rescan_all(text, code_styles_);
+
+    std::string out(static_cast<std::size_t>(tlen), S_PLAIN);
+    for (int i = 0; i < tlen; ++i) {
+        out[static_cast<std::size_t>(i)] =
+            static_cast<char>('A' + code_styles_[static_cast<std::size_t>(i)]);
+    }
+    gui_secure_free_text(raw, static_cast<std::size_t>(tlen));
+
+    style_buf_->replace(0, style_buf_->length(), out.c_str());
+}
+
+void Highlighter::rescan_code_edit(int pos, int nIns, int nDel)
+{
+    const int tlen = buf_->length();
+    if (tlen <= 0) {
+        code_styles_.clear();
+        rescanner_.reset();
+        return;
+    }
+    if (style_buf_->length() != tlen) {
+        // Defensive: the style buffer is length-synced in on_modify(), so this
+        // only happens if a caller bypassed it. Fall back to a full scan.
+        scan_code_all();
+        return;
+    }
+
+    char *raw = buf_->text();
+    if (raw == nullptr) return;
+    const std::string_view text(raw, static_cast<std::size_t>(tlen));
+
+    // The style buffer was length-synced in on_modify(); mirror it so the
+    // rescanner sees the same starting point as the editor.
+    char *sb = style_buf_->text();
+    if (sb == nullptr) {
+        gui_secure_free_text(raw, static_cast<std::size_t>(tlen));
+        scan_code_all();
+        return;
+    }
+    code_styles_.resize(static_cast<std::size_t>(tlen));
+    for (std::size_t i = 0; i < code_styles_.size(); ++i) {
+        const char c = sb[i];
+        unsigned char v = (c >= 'A' && c <= 'Z')
+                              ? static_cast<unsigned char>(c - 'A')
+                              : static_cast<unsigned char>(SynStyle::Normal);
+        // Only the six code styles are valid in this mode.
+        if (v > static_cast<unsigned char>(SynStyle::Preproc))
+            v = static_cast<unsigned char>(SynStyle::Normal);
+        code_styles_[i] = v;
+    }
+    gui_secure_free_text(sb, static_cast<std::size_t>(tlen));
+
+    const auto dirty = rescanner_.rescan_after_edit(
+        text, static_cast<std::size_t>(pos), static_cast<std::size_t>(nDel),
+        static_cast<std::size_t>(nIns), code_styles_);
+
+    if (dirty.end > dirty.start) {
+        std::string out(dirty.end - dirty.start, S_PLAIN);
+        for (std::size_t i = dirty.start; i < dirty.end; ++i) {
+            out[i - dirty.start] = static_cast<char>('A' + code_styles_[i]);
+        }
+        style_buf_->replace(static_cast<int>(dirty.start),
+                            static_cast<int>(dirty.end), out.c_str());
+    }
+
+    gui_secure_free_text(raw, static_cast<std::size_t>(tlen));
+}
+
+void Highlighter::on_modify(int pos, int nIns, int nDel)
 {
     if (!buf_ || !style_buf_) return;
     if (nIns == 0 && nDel == 0) return;
@@ -499,6 +679,14 @@ void MdHighlighter::on_modify(int pos, int nIns, int nDel)
         style_buf_->replace(pos, pos + nDel, ph.c_str());
     }
 
+    // Code mode rescans the affected region immediately: the incremental
+    // scanner is bounded by the checkpoint interval, not the document size.
+    if (mode_ == HighlightMode::Code) {
+        rescan_code_edit(pos, nIns, nDel);
+        return;
+    }
+    if (mode_ != HighlightMode::Markdown) return;
+
     // Step 2: coalesce the edit range and (re)arm a debounce timer.
     // Subsequent edits within ~30 ms cancel and reschedule, so a burst of
     // keystrokes triggers only a single rescan.
@@ -512,7 +700,7 @@ void MdHighlighter::on_modify(int pos, int nIns, int nDel)
     }
 
     if (!timer_scheduled_) {
-        Fl::add_timeout(0.03, &MdHighlighter::timeout_cb, this);
+        Fl::add_timeout(0.03, &Highlighter::timeout_cb, this);
         timer_scheduled_ = true;
     }
 }
@@ -520,20 +708,20 @@ void MdHighlighter::on_modify(int pos, int nIns, int nDel)
 // ---------------------------------------------------------------------------
 // Debounced rescan plumbing
 // ---------------------------------------------------------------------------
-void MdHighlighter::timeout_cb(void *self)
+void Highlighter::timeout_cb(void *self)
 {
-    static_cast<MdHighlighter *>(self)->flush_pending();
+    static_cast<Highlighter *>(self)->flush_pending();
 }
 
-void MdHighlighter::cancel_timer()
+void Highlighter::cancel_timer()
 {
     if (timer_scheduled_) {
-        Fl::remove_timeout(&MdHighlighter::timeout_cb, this);
+        Fl::remove_timeout(&Highlighter::timeout_cb, this);
         timer_scheduled_ = false;
     }
 }
 
-void MdHighlighter::flush_pending()
+void Highlighter::flush_pending()
 {
     timer_scheduled_ = false;
     if (!buf_ || !style_buf_ || pending_pos_ < 0) return;
@@ -554,11 +742,11 @@ void MdHighlighter::flush_pending()
             scan(text, tlen, style.data());
             style_buf_->replace(0, style_buf_->length(), style.c_str());
         }
-        std::free(text);
+        gui_secure_free_text(text, static_cast<std::size_t>(tlen));
     }
 }
 
-bool MdHighlighter::has_fence_markers(const char *text, int len)
+bool Highlighter::has_fence_markers(const char *text, int len)
 {
     int i = 0;
     while (i < len) {
@@ -579,7 +767,7 @@ bool MdHighlighter::has_fence_markers(const char *text, int len)
     return false;
 }
 
-bool MdHighlighter::try_block_rescan(int pos, int end)
+bool Highlighter::try_block_rescan(int pos, int end)
 {
     const int tlen = buf_->length();
     if (tlen == 0) {
@@ -595,7 +783,7 @@ bool MdHighlighter::try_block_rescan(int pos, int end)
     // Their style state spans many lines, so a local update could miss
     // openings or closings outside the edited paragraph.
     if (has_fence_markers(text, tlen)) {
-        std::free(text);
+        gui_secure_free_text(text, static_cast<std::size_t>(tlen));
         return false;
     }
 
@@ -642,7 +830,7 @@ bool MdHighlighter::try_block_rescan(int pos, int end)
         style_buf_->replace(bs, be, style.c_str());
     }
 
-    std::free(text);
+    gui_secure_free_text(text, static_cast<std::size_t>(tlen));
     return true;
 }
 
@@ -651,8 +839,9 @@ bool MdHighlighter::try_block_rescan(int pos, int end)
 // Returns empty string when pos is not over a styled link ('G') or when the
 // text doesn't contain a recognisable inline-link pattern.
 // ---------------------------------------------------------------------------
-std::string MdHighlighter::url_at(int pos) const
+std::string Highlighter::url_at(int pos) const
 {
+    if (mode_ != HighlightMode::Markdown) return {};
     if (!style_buf_ || !buf_) return {};
     const int len = style_buf_->length();
     if (pos < 0 || pos >= len) return {};
@@ -668,7 +857,7 @@ std::string MdHighlighter::url_at(int pos) const
     char *raw = buf_->text_range(start, end);
     if (!raw) return {};
     std::string span(raw);
-    std::free(raw);
+    gui_secure_free_text(raw, static_cast<std::size_t>(end - start));
 
     // Inline link: [text](url) or ![img](url)
     // Find the last "](" in the span so nested brackets don't confuse us.

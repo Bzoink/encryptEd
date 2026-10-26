@@ -1,7 +1,8 @@
-#include "tui/syn_parse.h"
+#include "highlight/syn_parse.h"
 
 #include <cctype>
 #include <cstring>
+#include <string_view>
 
 namespace {
 
@@ -637,7 +638,7 @@ inline void push_run(std::vector<SynRun> &out,
 
 // Scan a quoted string starting at `i` (opening quote already identified).
 // Handles backslash escapes. Returns index past the closing quote (or n).
-std::size_t scan_quoted(const std::string &s, std::size_t i, char q) {
+std::size_t scan_quoted(std::string_view s, std::size_t i, char q) {
     ++i;  // skip opening quote
     while (i < s.size()) {
         char c = s[i];
@@ -706,9 +707,10 @@ SynLang syn_detect(const std::string &filename) {
     return SynLang::None;
 }
 
-std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang lang) {
-    std::vector<SynRun> runs;
-    if (lang == SynLang::None) return runs;
+void syn_parse_line(std::string_view s, SynState &st, SynLang lang,
+                    std::vector<SynRun> &runs) {
+    runs.clear();
+    if (lang == SynLang::None) return;
 
     const std::size_t n = s.size();
     std::size_t i = 0;
@@ -720,7 +722,7 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
         auto end = s.find(close);
         if (end == std::string::npos) {
             if (n) runs.push_back({0, n, SynStyle::String});
-            return runs;
+            return;
         }
         push_run(runs, 0, end + 3, SynStyle::String);
         st.in_multiline_str = false;
@@ -737,7 +739,7 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
         auto end = s.find(close_seq, i);
         if (end == std::string::npos) {
             if (n > i) push_run(runs, i, n, SynStyle::Comment);
-            return runs;
+            return;
         }
         push_run(runs, i, end + 2, SynStyle::Comment);
         st.in_block_comment = false;
@@ -765,11 +767,11 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
         while (j < n && s[j] == '#') ++j;
         if (j > 0 && j <= 6 && (j == n || s[j] == ' ')) {
             runs.push_back({0, n, SynStyle::Preproc});
-            return runs;
+            return;
         }
         if (n >= 3 && s[0] == '`' && s[1] == '`' && s[2] == '`') {
             runs.push_back({0, n, SynStyle::Preproc});
-            return runs;
+            return;
         }
         // Inline code: `...`
         std::size_t k = 0;
@@ -783,7 +785,7 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
                 ++k;
             }
         }
-        return runs;
+        return;
     }
 
     // --- Ruby =begin/=end block comments ---
@@ -791,12 +793,12 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
         if (st.in_block_comment) {
             if (n >= 4 && s.substr(0, 4) == "=end") st.in_block_comment = false;
             push_run(runs, 0, n, SynStyle::Comment);
-            return runs;
+            return;
         }
         if (n >= 6 && s.substr(0, 6) == "=begin") {
             st.in_block_comment = true;
             push_run(runs, 0, n, SynStyle::Comment);
-            return runs;
+            return;
         }
     }
 
@@ -805,12 +807,12 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
         if (st.in_block_comment) {
             if (n >= 4 && s.substr(0, 4) == "=cut") st.in_block_comment = false;
             push_run(runs, 0, n, SynStyle::Comment);
-            return runs;
+            return;
         }
         if (n >= 4 && s[0] == '=' && std::isalpha(static_cast<unsigned char>(s[1]))) {
             st.in_block_comment = true;
             push_run(runs, 0, n, SynStyle::Comment);
-            return runs;
+            return;
         }
     }
 
@@ -818,20 +820,20 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
     if (lang == SynLang::INI) {
         if (n > 0 && s[0] == '[') {
             runs.push_back({0, n, SynStyle::Preproc});
-            return runs;
+            return;
         }
         // Value after = or : highlighted as string
         auto eq = s.find_first_of("=:");
         if (eq != std::string::npos && eq + 1 < n) {
             push_run(runs, eq + 1, n, SynStyle::String);
         }
-        return runs;
+        return;
     }
 
     // --- Batch/CMD: :: line comment ---
     if (lang == SynLang::Batch && i + 1 < n && s[i] == ':' && s[i + 1] == ':') {
         push_run(runs, i, n, SynStyle::Comment);
-        return runs;
+        return;
     }
 
     // --- Preprocessor line (C/C++): # must be first non-whitespace ---
@@ -840,7 +842,7 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
         while (j < n && (s[j] == ' ' || s[j] == '\t')) ++j;
         if (j < n && s[j] == '#') {
             runs.push_back({0, n, SynStyle::Preproc});
-            return runs;
+            return;
         }
     }
 
@@ -854,11 +856,11 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
         // Line comment: // (C-style langs) or # (hash-comment langs)
         if (c_style && c == '/' && i + 1 < n && s[i + 1] == '/') {
             push_run(runs, i, n, SynStyle::Comment);
-            return runs;
+            return;
         }
         if (hash_cmt && c == '#') {
             push_run(runs, i, n, SynStyle::Comment);
-            return runs;
+            return;
         }
         // SQL/Lua line comment: --
         // (Lua block --[[ ]] handled below under block comments)
@@ -869,19 +871,19 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
                 if (end == std::string::npos) {
                     push_run(runs, i, n, SynStyle::Comment);
                     st.in_block_comment = true;
-                    return runs;
+                    return;
                 }
                 push_run(runs, i, end + 2, SynStyle::Comment);
                 i = end + 2;
                 continue;
             }
             push_run(runs, i, n, SynStyle::Comment);
-            return runs;
+            return;
         }
         // Assembly: ; line comment
         if (lang == SynLang::Asm && c == ';') {
             push_run(runs, i, n, SynStyle::Comment);
-            return runs;
+            return;
         }
         // Assembly: . directives (.section, .global, .data, ...)
         if (lang == SynLang::Asm && c == '.') {
@@ -894,7 +896,7 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
         // Batch/CMD :: comment (at line start already handled above; skip mid-line)
         if (lang == SynLang::Batch && c == ':' && i + 1 < n && s[i + 1] == ':') {
             push_run(runs, i, n, SynStyle::Comment);
-            return runs;
+            return;
         }
         // HTML/XML comment: <!-- ... -->
         if (html_cmt && c == '<' && i + 3 < n && s[i + 1] == '!' &&
@@ -902,7 +904,7 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
             auto end = s.find("-->", i + 4);
             if (end == std::string::npos) {
                 push_run(runs, i, n, SynStyle::Comment);
-                return runs;
+                return;
             }
             push_run(runs, i, end + 3, SynStyle::Comment);
             i = end + 3;
@@ -930,7 +932,7 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
             if (end == std::string::npos) {
                 push_run(runs, i, n, SynStyle::Comment);
                 st.in_block_comment = true;
-                return runs;
+                return;
             }
             push_run(runs, i, end + 2, SynStyle::Comment);
             i = end + 2;
@@ -943,7 +945,7 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
             if (end == std::string::npos) {
                 push_run(runs, i, n, SynStyle::Comment);
                 st.in_block_comment = true;
-                return runs;
+                return;
             }
             push_run(runs, i, end + 2, SynStyle::Comment);
             i = end + 2;
@@ -959,7 +961,7 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
                 push_run(runs, i, n, SynStyle::String);
                 st.in_multiline_str = true;
                 st.ml_str_char = c;
-                return runs;
+                return;
             }
             push_run(runs, i, end + 3, SynStyle::String);
             i = end + 3;
@@ -1025,7 +1027,7 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
         if (is_ident_start(uc)) {
             std::size_t j = i + 1;
             while (j < n && is_ident(static_cast<unsigned char>(s[j]))) ++j;
-            if (kw && is_keyword(s.c_str() + i, j - i, kw))
+            if (kw && is_keyword(s.data() + i, j - i, kw))
                 push_run(runs, i, j, SynStyle::Keyword);
             i = j;
             continue;
@@ -1034,5 +1036,4 @@ std::vector<SynRun> syn_parse_line(const std::string &s, SynState &st, SynLang l
         ++i;
     }
 
-    return runs;
 }

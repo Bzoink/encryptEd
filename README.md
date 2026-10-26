@@ -154,6 +154,13 @@ The vertical scrollbar appears when a document exceeds the editor height. Toggle
 **Settings → Vertical Scrollbar** in etui or **Settings → Preferences → Vertical scrollbar**
 in the GUI. The preference is saved; etui supports clicking or dragging the track.
 
+**Syntax highlighting** is available in both front ends. The GUI preference
+**Preferences → Highlighting** offers *Off*, *Auto (file type)*, *Markdown*, or a
+specific language; *Auto* picks a language from the file extension and stays off for
+untitled buffers until the first save. Code highlighting covers the same 31 languages
+as etui. Documents larger than 2 MB keep the preference but skip highlighting, and the
+status bar says so.
+
 Terminal dialogs support mouse clicks as well as keyboard navigation. The file picker
 provides **Open/Save**, **Parent**, and **Cancel** buttons; Tab cycles through its controls.
 Long About and plugin messages provide **Scroll Up/Down** buttons and mouse-wheel scrolling,

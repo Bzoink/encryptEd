@@ -148,6 +148,17 @@ target_include_directories(encrypted_text_transform PUBLIC
 target_link_libraries(encrypted_text_transform PUBLIC encrypted_core)
 encrypted_apply_hardening(encrypted_text_transform)
 
+# Syntax tokenizer and incremental-rescan helpers. UI-free so the terminal
+# editor, the FLTK GUI, and standalone tests all share one implementation.
+add_library(encrypted_highlight STATIC
+    src/highlight/rescan.cpp
+    src/highlight/syn_parse.cpp
+)
+target_include_directories(encrypted_highlight PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+encrypted_apply_hardening(encrypted_highlight)
+
 # Restricted embedded Lua: omit the interpreter and all I/O/module libraries.
 set(ENCRYPTED_LUA_SOURCES
     lapi.c lcode.c lctype.c ldebug.c ldo.c ldump.c lfunc.c lgc.c llex.c
@@ -226,7 +237,7 @@ if(WIN32 AND CMAKE_CROSSCOMPILING)
 
         set(ENCRYPTED_GUI_SOURCES
             src/gui/main_fltk.cpp
-            src/gui/md_highlight.cpp
+            src/gui/highlight.cpp
         )
         file(TO_NATIVE_PATH "${ENCRYPTED_ICON_ICO}" ENCRYPTED_ICON_ICO_RC)
         configure_file(
@@ -241,6 +252,7 @@ if(WIN32 AND CMAKE_CROSSCOMPILING)
         )
         target_link_libraries(encryptEd PRIVATE
             encrypted_core
+            encrypted_highlight
             encrypted_text_transform
             encrypted_plugins
             fltk::fltk
@@ -330,7 +342,7 @@ endif()
 if(TARGET fltk::fltk OR FLTK_CONFIG)
     set(ENCRYPTED_GUI_SOURCES
         src/gui/main_fltk.cpp
-        src/gui/md_highlight.cpp
+        src/gui/highlight.cpp
     )
     if(WIN32)
         file(TO_NATIVE_PATH "${ENCRYPTED_ICON_ICO}" ENCRYPTED_ICON_ICO_RC)
@@ -350,13 +362,13 @@ if(TARGET fltk::fltk OR FLTK_CONFIG)
     )
     if(TARGET fltk::fltk)
         # CMake target: library order is handled automatically (works with static libs too).
-        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_text_transform encrypted_plugins fltk::fltk)
+        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_highlight encrypted_text_transform encrypted_plugins fltk::fltk)
     else()
         # Raw fltk-config flags: target_link_options places them before object files,
         # which is fine for shared libraries (system install).
         target_compile_options(encryptEd PRIVATE ${_fltk_cxx_list})
         target_link_options(encryptEd   PRIVATE ${_fltk_ld_list})
-        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_text_transform encrypted_plugins)
+        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_highlight encrypted_text_transform encrypted_plugins)
     endif()
     target_include_directories(encryptEd PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -430,12 +442,11 @@ endif()
 add_library(etui_core STATIC
     src/tui/edit_buffer.cpp
     src/tui/md_parse.cpp
-    src/tui/syn_parse.cpp
     src/tui/config.cpp
     src/tui/clipboard.cpp
 )
 target_include_directories(etui_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(etui_core PUBLIC encrypted_core)
+target_link_libraries(etui_core PUBLIC encrypted_core encrypted_highlight)
 encrypted_apply_hardening(etui_core)
 
 option(ENCRYPTED_BUILD_TUI "Build the etui terminal front-end (requires FTXUI)" ON)
@@ -512,6 +523,24 @@ if(TARGET encryptEd)
     encrypted_make_windows_self_contained(plugin_buffer_tests -static-libstdc++)
     encrypted_apply_hardening(plugin_buffer_tests)
     add_test(NAME plugin_buffer_tests COMMAND plugin_buffer_tests)
+
+    add_executable(gui_highlight_tests
+        tests/gui/highlight_tests.cpp
+        src/gui/highlight.cpp
+    )
+    target_link_libraries(gui_highlight_tests PRIVATE
+        encrypted_core
+        encrypted_highlight
+    )
+    if(TARGET fltk::fltk)
+        target_link_libraries(gui_highlight_tests PRIVATE fltk::fltk)
+    else()
+        target_compile_options(gui_highlight_tests PRIVATE ${_fltk_cxx_list})
+        target_link_options(gui_highlight_tests PRIVATE ${_fltk_ld_list})
+    endif()
+    encrypted_make_windows_self_contained(gui_highlight_tests -static-libstdc++)
+    encrypted_apply_hardening(gui_highlight_tests)
+    add_test(NAME gui_highlight_tests COMMAND gui_highlight_tests)
 endif()
 
 add_executable(plugin_tests tests/plugin_tests.cpp)
@@ -610,13 +639,21 @@ encrypted_make_windows_self_contained(tui_edit_buffer_tests)
 encrypted_apply_hardening(tui_edit_buffer_tests)
 add_test(NAME tui_edit_buffer_tests COMMAND tui_edit_buffer_tests)
 
-add_executable(tui_syn_parse_tests
-    tests/tui/syn_parse_tests.cpp
+add_executable(highlight_syn_parse_tests
+    tests/highlight/syn_parse_tests.cpp
 )
-target_link_libraries(tui_syn_parse_tests PRIVATE etui_core)
-encrypted_make_windows_self_contained(tui_syn_parse_tests)
-encrypted_apply_hardening(tui_syn_parse_tests)
-add_test(NAME tui_syn_parse_tests COMMAND tui_syn_parse_tests)
+target_link_libraries(highlight_syn_parse_tests PRIVATE encrypted_highlight)
+encrypted_make_windows_self_contained(highlight_syn_parse_tests)
+encrypted_apply_hardening(highlight_syn_parse_tests)
+add_test(NAME highlight_syn_parse_tests COMMAND highlight_syn_parse_tests)
+
+add_executable(highlight_rescan_tests
+    tests/highlight/rescan_tests.cpp
+)
+target_link_libraries(highlight_rescan_tests PRIVATE encrypted_highlight)
+encrypted_make_windows_self_contained(highlight_rescan_tests)
+encrypted_apply_hardening(highlight_rescan_tests)
+add_test(NAME highlight_rescan_tests COMMAND highlight_rescan_tests)
 
 add_executable(tui_config_tests
     tests/tui/config_tests.cpp

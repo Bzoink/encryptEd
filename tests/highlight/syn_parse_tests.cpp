@@ -1,10 +1,11 @@
 // Unit tests for the etui syntax highlighter: language detection and runs.
 
 #include <cstdio>
+#include <string_view>
 #include <string>
 #include <vector>
 
-#include "tui/syn_parse.h"
+#include "highlight/syn_parse.h"
 
 static int g_failures = 0;
 #define CHECK(cond)                                                       \
@@ -14,6 +15,13 @@ static int g_failures = 0;
             ++g_failures;                                                 \
         }                                                                 \
     } while (0)
+
+// Out-parameter wrapper: the tokenizer reuses the caller's run vector.
+static std::vector<SynRun> parse_line(std::string_view line, SynState &st, SynLang lang) {
+    std::vector<SynRun> runs;
+    syn_parse_line(line, st, lang, runs);
+    return runs;
+}
 
 // Style covering `offset`, or Normal when no run covers it.
 static SynStyle style_at(const std::vector<SynRun> &runs, std::size_t offset) {
@@ -53,7 +61,7 @@ static void test_json() {
     const std::string line =
         R"({"key": "value", "n": -12.5e3, "ok": true, "off": false, "nil": null})";
     SynState st{};
-    const auto runs = syn_parse_line(line, st, SynLang::JSON);
+    const auto runs = parse_line(line, st, SynLang::JSON);
 
     CHECK(style_of(runs, line, "\"key\"") == SynStyle::String);
     CHECK(style_of(runs, line, "\"value\"") == SynStyle::String);
@@ -67,20 +75,20 @@ static void test_json() {
     // A URL inside a string must not start a comment.
     const std::string url = R"({"u": "http://example.com/x"})";
     SynState st2{};
-    const auto runs2 = syn_parse_line(url, st2, SynLang::JSON);
+    const auto runs2 = parse_line(url, st2, SynLang::JSON);
     CHECK(style_of(runs2, url, "http://example.com/x") == SynStyle::String);
 
     // Literals inside strings stay strings.
     const std::string quoted = R"({"true": "null"})";
     SynState st3{};
-    const auto runs3 = syn_parse_line(quoted, st3, SynLang::JSON);
+    const auto runs3 = parse_line(quoted, st3, SynLang::JSON);
     CHECK(style_of(runs3, quoted, "\"true\"") == SynStyle::String);
     CHECK(style_of(runs3, quoted, "\"null\"") == SynStyle::String);
 
     // Numbers keep sign-adjacent digits and exponents.
     const std::string nums = R"([1, 2.5, -3, 1E+6])";
     SynState st4{};
-    const auto runs4 = syn_parse_line(nums, st4, SynLang::JSON);
+    const auto runs4 = parse_line(nums, st4, SynLang::JSON);
     CHECK(style_of(runs4, nums, "2.5") == SynStyle::Number);
     CHECK(style_of(runs4, nums, "1E+6") == SynStyle::Number);
     CHECK(style_last_of(runs4, nums, "1E+6") == SynStyle::Number);
@@ -89,18 +97,18 @@ static void test_json() {
 static void test_shared_paths() {
     const std::string py = "x = 1.5e-3  # note";
     SynState pst{};
-    const auto pruns = syn_parse_line(py, pst, SynLang::Python);
+    const auto pruns = parse_line(py, pst, SynLang::Python);
     CHECK(style_of(pruns, py, "1.5e-3") == SynStyle::Number);
     CHECK(style_of(pruns, py, "# note") == SynStyle::Comment);
 
     const std::string open = "/* start";
     SynState cst{};
-    const auto oruns = syn_parse_line(open, cst, SynLang::C);
+    const auto oruns = parse_line(open, cst, SynLang::C);
     CHECK(cst.in_block_comment);
     CHECK(style_of(oruns, open, "/* start") == SynStyle::Comment);
 
     const std::string close = "still */ int x;";
-    const auto cruns = syn_parse_line(close, cst, SynLang::C);
+    const auto cruns = parse_line(close, cst, SynLang::C);
     CHECK(!cst.in_block_comment);
     CHECK(style_of(cruns, close, "int") == SynStyle::Keyword);
 }
