@@ -57,6 +57,32 @@ static void test_repeat_weak_kdf_rejected(void)
     txx_buffer_secure_free(&encoded);
 }
 
+static void test_repeat_decode_weak_kdf_rejected(void)
+{
+    const uint8_t text[] = "secret";
+    txx_codec_options options;
+    txx_buffer encoded;
+    txx_buffer decoded;
+    txx_header header;
+
+    test_options(&options);
+    CHECK(txx_encode_text(text, sizeof(text) - 1U, "right", &options, &encoded) == TXX_OK);
+    CHECK(txx_header_decode(encoded.data, &header) == TXX_OK);
+
+    /* A hostile header can request as little as 256 blocks (256 KiB) of Argon2
+     * memory; decoding must refuse anything below the documented 8192-block
+     * floor before doing any password work. */
+    header.kdf_memory_blocks = TXX_DECODE_MIN_KDF_MEMORY_BLOCKS - 1U;
+    txx_header_encode(encoded.data, &header);
+    CHECK(txx_decode_text(encoded.data, encoded.len, "right", &decoded) == TXX_ERR_UNSUPPORTED);
+
+    header.kdf_memory_blocks = TXX_MIN_KDF_MEMORY_BLOCKS;
+    txx_header_encode(encoded.data, &header);
+    CHECK(txx_decode_text(encoded.data, encoded.len, "right", &decoded) == TXX_ERR_UNSUPPORTED);
+
+    txx_buffer_secure_free(&encoded);
+}
+
 static void round_trip_bytes(const uint8_t *text, size_t len)
 {
     txx_codec_options options;
@@ -342,6 +368,7 @@ int main(void)
     test_platform_helpers();
     test_repeat_empty_password();
     test_repeat_weak_kdf_rejected();
+    test_repeat_decode_weak_kdf_rejected();
 
     if (failures != 0) {
         fprintf(stderr, "%d test failure(s)\n", failures);

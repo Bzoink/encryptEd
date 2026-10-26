@@ -432,6 +432,8 @@ cleanup:
     char *tmp_path = NULL;
     int fd = -1;
     int tmp_created = 0;
+    int have_mode = 0;
+    mode_t preserve_mode = 0;
     int attempt;
     txx_status status = TXX_ERR_IO;
 
@@ -440,6 +442,18 @@ cleanup:
     }
     if (split_path(path, &dir, &base) != 0) {
         goto cleanup;
+    }
+
+    // Preserve an existing file's permission bits when overwriting it, like the
+    // Windows path preserves its DACL. Restrict to regular files and the rwx
+    // bits only (never propagate setuid/setgid/sticky). New files keep the
+    // private 0600 mode set by open() below.
+    {
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+            preserve_mode = st.st_mode & 0777;
+            have_mode = 1;
+        }
     }
 
     for (attempt = 0; attempt < 8; ++attempt) {
@@ -480,6 +494,12 @@ cleanup:
     }
     if (fsync(fd) != 0 && errno != EINVAL) {
         goto cleanup;
+    }
+    // Apply the preserved mode only after the payload is flushed: until now the
+    // temporary file has stayed 0600, so plaintext is never exposed at a wider
+    // mode while it is still being written.
+    if (have_mode) {
+        (void)fchmod(fd, preserve_mode);
     }
     if (close(fd) != 0) {
         fd = -1;

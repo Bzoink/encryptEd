@@ -159,6 +159,19 @@ provides **Open/Save**, **Parent**, and **Cancel** buttons; Tab cycles through i
 Long About and plugin messages provide **Scroll Up/Down** buttons and mouse-wheel scrolling,
 with Page Up/Page Down retained. Click text fields to place the cursor.
 
+## Security Notes
+
+- Files are saved atomically (temp file + rename) with `fsync`. New files are
+  created private (mode 0600); overwriting an existing file preserves its
+  permission bits (excluding setuid/setgid/sticky).
+- Decrypted text, keys, and passwords are zeroed after use and core dumps are
+  disabled, but memory is not locked (`mlock`), so it may still be paged to swap.
+- Passwords are treated as NUL-terminated C strings: they cannot contain NUL
+  bytes, and the CLI caps input at 4095 bytes.
+- Decoding enforces the Argon2 parameter range documented in
+  [docs/txx-format.md](docs/txx-format.md), refusing weak parameter sets before
+  doing any password work.
+
 ## License
 
 GPLv3 — see [LICENSE](LICENSE). Vendored dependencies keep their own licenses (Monocypher:

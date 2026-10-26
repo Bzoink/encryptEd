@@ -132,7 +132,7 @@ txx_status txx_header_validate_supported(const txx_header *header)
     } else if (header->compress_alg != TXX_COMPRESS_NONE) {
         return TXX_ERR_UNSUPPORTED;
     }
-    if (header->kdf_memory_blocks < TXX_MIN_KDF_MEMORY_BLOCKS ||
+    if (header->kdf_memory_blocks < TXX_DECODE_MIN_KDF_MEMORY_BLOCKS ||
         header->kdf_passes < TXX_MIN_KDF_PASSES ||
         header->kdf_passes > TXX_MAX_KDF_PASSES ||
         header->kdf_lanes < 1U) {
