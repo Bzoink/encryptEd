@@ -18,11 +18,13 @@
 #define TXX_COMPRESS_MICROZ_DEFLATE 1U
 
 #define TXX_MAX_KDF_MEMORY_BLOCKS 262144U
+#define TXX_MAX_KDF_LANES 8U
 /* Argon2id RFC 9106 recommends >= 8*lanes blocks; we additionally enforce */
-/* a defense-in-depth floor of 256 blocks (256 KiB) and >= 2 passes when    */
-/* validating header parameters supplied by untrusted input.                */
+/* a defense-in-depth range of 256..262144 blocks, 2..10 passes, and       */
+/* 1..8 lanes with memory_blocks >= 8*lanes for untrusted headers.          */
 #define TXX_MIN_KDF_MEMORY_BLOCKS 256U
 #define TXX_MIN_KDF_PASSES 2U
+#define TXX_MAX_KDF_PASSES 10U
 #define TXX_MAX_TEXT_BYTES (128ULL * 1024ULL * 1024ULL)
 #define TXX_FILE_OVERHEAD_BYTES 56ULL
 #define TXX_MAX_FILE_BYTES (TXX_MAX_TEXT_BYTES + TXX_HEADER_SIZE + TXX_FILE_OVERHEAD_BYTES)

@@ -134,11 +134,13 @@ txx_status txx_header_validate_supported(const txx_header *header)
     }
     if (header->kdf_memory_blocks < TXX_MIN_KDF_MEMORY_BLOCKS ||
         header->kdf_passes < TXX_MIN_KDF_PASSES ||
+        header->kdf_passes > TXX_MAX_KDF_PASSES ||
         header->kdf_lanes < 1U) {
         return TXX_ERR_UNSUPPORTED;
     }
     if (header->kdf_memory_blocks > TXX_MAX_KDF_MEMORY_BLOCKS ||
-        header->kdf_memory_blocks < 8U * header->kdf_lanes) {
+        header->kdf_lanes > TXX_MAX_KDF_LANES ||
+        header->kdf_lanes > header->kdf_memory_blocks / 8U) {
         return TXX_ERR_UNSUPPORTED;
     }
     if (header->salt_len != 16U || header->nonce_len != 24U || header->tag_len != 16U) {

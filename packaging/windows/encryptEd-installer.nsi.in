@@ -62,19 +62,6 @@ Function un.onInit
   !insertmacro MULTIUSER_UNINIT
 FunctionEnd
 
-Function RemoveInstalledCopy
-  Exch $0
-
-  IfFileExists "$0\Uninstall.exe" 0 done
-  ExecWait '"$0\Uninstall.exe" /S _?=$0' $1
-  ${If} $1 != 0
-    Abort "Failed to remove the existing installation."
-  ${EndIf}
-
-done:
-  Pop $0
-FunctionEnd
-
 Function RemoveExistingInstallations
   ReadRegStr $0 HKCU "${PRODUCT_INSTALL_KEY}" "InstallLocation"
   ReadRegStr $1 HKLM "${PRODUCT_INSTALL_KEY}" "InstallLocation"
@@ -84,21 +71,8 @@ Function RemoveExistingInstallations
     Return
   ${EndIf}
 
-  MessageBox MB_YESNO|MB_ICONQUESTION \
-    "${PRODUCT_NAME} is already installed on this computer. Setup needs to remove the existing installation before continuing." \
-    IDYES remove_existing
-  Abort "Installation cancelled."
-
-remove_existing:
-  ${If} $0 != ""
-    Push $0
-    Call RemoveInstalledCopy
-  ${EndIf}
-  ${If} $1 != ""
-  ${AndIf} $1 != $0
-    Push $1
-    Call RemoveInstalledCopy
-  ${EndIf}
+  MessageBox MB_OK|MB_ICONEXCLAMATION "${PRODUCT_NAME} is already installed. Uninstall the existing copy from Windows Settings, then run setup again. Setup will not launch an existing uninstaller with elevated privileges."
+  Abort "Uninstall the existing copy before installing this version."
 FunctionEnd
 
 Section "${PRODUCT_NAME}"

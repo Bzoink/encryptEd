@@ -29,10 +29,12 @@ struct Position {
 class EditBuffer {
 public:
     EditBuffer();
+    ~EditBuffer();
 
     // Whole-document access. set_text() splits on '\n'; any trailing '\r'
     // is stripped from each line so the model is newline-agnostic.
     void set_text(const std::string &text);
+    void clear_sensitive();
     // Replace as one undo action without resetting earlier history.
     bool replace_text(const std::string &text);
     std::size_t byte_position(Position p) const;
@@ -132,6 +134,8 @@ private:
     Position clamp(Position p) const;
     void move_to(Position p, bool extend);
     void push_undo(int tag);
+    static void wipe_lines(std::vector<std::string> &lines);
+    static void wipe_history(std::vector<Snapshot> &history);
     void replace_range(Position a, Position b, const std::string &with);
 
     // Code-point <-> byte index conversions within a single line's UTF-8 string.

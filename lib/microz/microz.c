@@ -2623,6 +2623,12 @@ extern "C"
             return MZ_STREAM_ERROR;
         if (pStream->state)
         {
+            // The LZ dictionary contains recent source bytes. Erase the whole
+            // compressor state before returning it to the allocator.
+            volatile mz_uint8 *p = (volatile mz_uint8 *)pStream->state;
+            size_t n = sizeof(tdefl_compressor);
+            while (n-- != 0)
+                *p++ = 0;
             pStream->zfree(pStream->opaque, pStream->state);
             pStream->state = NULL;
         }

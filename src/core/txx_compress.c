@@ -52,7 +52,7 @@ txx_status txx_compress_encode(const uint8_t *input,
 
     compressed_len = bound;
     if (microz_compress_block(input, (uint32_t)input_len, compressed.data, &compressed_len) != MICROZ_OK) {
-        txx_buffer_free(&compressed);
+        txx_buffer_secure_free(&compressed);
         return TXX_ERR_COMPRESS;
     }
     compressed.len = compressed_len;
@@ -63,7 +63,7 @@ txx_status txx_compress_encode(const uint8_t *input,
         return TXX_OK;
     }
 
-    txx_buffer_free(&compressed);
+    txx_buffer_secure_free(&compressed);
     return copy_payload(input, input_len, payload);
 }
 

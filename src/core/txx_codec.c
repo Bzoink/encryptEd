@@ -92,7 +92,10 @@ txx_status txx_encode_text(const uint8_t *plaintext,
     if (options->kdf.memory_blocks > TXX_MAX_KDF_MEMORY_BLOCKS ||
         options->kdf.memory_blocks < TXX_MIN_KDF_MEMORY_BLOCKS ||
         options->kdf.passes < TXX_MIN_KDF_PASSES ||
-        options->kdf.lanes < 1U) {
+        options->kdf.passes > TXX_MAX_KDF_PASSES ||
+        options->kdf.lanes < 1U ||
+        options->kdf.lanes > TXX_MAX_KDF_LANES ||
+        options->kdf.lanes > options->kdf.memory_blocks / 8U) {
         return TXX_ERR_UNSUPPORTED;
     }
 

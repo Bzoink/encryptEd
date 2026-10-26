@@ -9,6 +9,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <ftxui/component/component.hpp>
@@ -31,6 +32,7 @@ extern "C" {
 #include "core/txx_status.h"
 #include "core/utf8.h"
 #include "platform/file_io.h"
+#include "platform/secure_mem.h"
 }
 
 #include "app/about.h"
@@ -51,6 +53,47 @@ using namespace tui_theme;
 namespace {
 
 constexpr uint64_t kMaxFileBytes = 64ull * 1024 * 1024;
+
+void wipe_string(std::string &value) {
+    if (!value.empty()) txx_secure_zero(value.data(), value.size());
+    value.clear();
+}
+
+struct StringWiper {
+    std::string &value;
+    ~StringWiper() { wipe_string(value); }
+};
+
+struct SensitiveString {
+    std::string value;
+    explicit SensitiveString(std::string text) : value(std::move(text)) {}
+    SensitiveString(SensitiveString &&other) noexcept : value(std::move(other.value)) {}
+    SensitiveString(const SensitiveString &other) : value(other.value) {}
+    SensitiveString &operator=(const SensitiveString &other) {
+        if (this != &other) { wipe_string(value); value = other.value; }
+        return *this;
+    }
+    ~SensitiveString() { wipe_string(value); }
+};
+
+class SecureString {
+public:
+    SecureString() = default;
+    SecureString(const SecureString &) = delete;
+    SecureString &operator=(const SecureString &) = delete;
+    ~SecureString() { clear(); }
+    void assign(const std::string &value) {
+        clear();
+        value_ = value;
+        present_ = true;
+    }
+    void clear() { wipe_string(value_); present_ = false; }
+    bool present() const { return present_; }
+    const std::string &get() const { return value_; }
+private:
+    std::string value_;
+    bool present_ = false;
+};
 
 std::string newline_terminator(txx_newline_style s) {
     switch (s) {
@@ -107,6 +150,14 @@ public:
         } else if (!pending_open_.empty()) {
             open_path_flow(pending_open_);
         }
+    }
+
+    ~EditorApp() override {
+        password_.clear();
+        wipe_string(clipboard_);
+        wipe_string(last_find_);
+        wipe_string(last_replace_);
+        wipe_string(dialog_input_);
     }
 
     bool Focusable() const override { return true; }
@@ -960,7 +1011,7 @@ private:
         picker_open_ = false;
         filepath_ = full.string();
         syn_lang_ = syn_detect(filepath_);
-        save_to_current_path();
+        save_to_current_path(has_txx_extension(filepath_));
     }
 
     bool picker_event(Event e) {
@@ -1508,7 +1559,10 @@ private:
         dialog_title_ = std::move(title);
         dialog_body_  = {};
         dialog_mask_  = mask;
+        wipe_string(dialog_input_);
         dialog_input_ = std::move(initial);
+        wipe_string(initial);
+        if (mask) dialog_input_.reserve(4096);
         dialog_cursor_ = dialog_input_.size();
         dialog_cb_    = std::move(cb);
     }
@@ -1520,7 +1574,7 @@ private:
         dialog_title_ = std::move(title);
         dialog_body_  = std::move(body);
         dialog_mask_  = false;
-        dialog_input_ = {};
+        wipe_string(dialog_input_);
         dialog_cb_    = [cb = std::move(cb)](bool ok, std::string){ cb(ok); };
     }
 
@@ -1598,17 +1652,26 @@ private:
         if (e == Event::End) { dialog_cursor_ = dialog_input_.size(); return true; }
         if (e == Event::Backspace) {
             const auto previous = utf8_prev(dialog_input_, dialog_cursor_);
+            if (dialog_cursor_ > previous)
+                txx_secure_zero(dialog_input_.data() + previous, dialog_cursor_ - previous);
             dialog_input_.erase(previous, dialog_cursor_ - previous);
             dialog_cursor_ = previous;
             return true;
         }
         if (e == Event::Delete) {
-            dialog_input_.erase(dialog_cursor_, utf8_next(dialog_input_, dialog_cursor_) - dialog_cursor_);
+            const auto next = utf8_next(dialog_input_, dialog_cursor_);
+            if (next > dialog_cursor_)
+                txx_secure_zero(dialog_input_.data() + dialog_cursor_, next - dialog_cursor_);
+            dialog_input_.erase(dialog_cursor_, next - dialog_cursor_);
             return true;
         }
         if (e.is_character()) {
-            dialog_input_.insert(dialog_cursor_, e.character());
-            dialog_cursor_ += e.character().size();
+            std::string character = e.character();
+            StringWiper character_wiper{character};
+            if (dialog_mask_ && character.size() > 4096 - std::min<std::size_t>(4096, dialog_input_.size()))
+                return true;
+            dialog_input_.insert(dialog_cursor_, character);
+            dialog_cursor_ += character.size();
             return true;
         }
         return true;
@@ -1616,11 +1679,11 @@ private:
 
     void close_dialog(bool accepted) {
         auto cb  = dialog_cb_;
-        auto val = dialog_input_;
+        auto val = std::move(dialog_input_);
         dialog_kind_  = DialogKind::None;
         dialog_cb_    = nullptr;
-        dialog_input_.clear();
-        if (cb) cb(accepted, val);
+        if (cb) cb(accepted, std::move(val));
+        wipe_string(val);
     }
 
     // ---- Lua plugins -------------------------------------------------------
@@ -1757,7 +1820,10 @@ private:
     void edit(const std::function<void()> &fn) { fn(); dirty_ = true; }
 
     void transform(const std::function<std::string(const std::string &)> &fn) {
-        std::string updated = fn(buffer_.text());
+        std::string document = buffer_.text();
+        StringWiper document_wiper{document};
+        std::string updated = fn(document);
+        StringWiper updated_wiper{updated};
         buffer_.select_all();
         edit([&]{ buffer_.insert_text(updated); });
         buffer_.set_cursor(Position{0, 0});
@@ -1773,7 +1839,8 @@ private:
 
     void cmd_new() {
         confirm_discard([this]{
-            buffer_.set_text(""); filepath_.clear(); password_.clear();
+            buffer_.set_text(""); filepath_.clear(); password_.clear(); encrypted_ = false;
+            wipe_string(clipboard_); wipe_string(last_find_); wipe_string(last_replace_);
             dirty_ = false; syn_lang_ = SynLang::None; scroll_top_ = 0; scroll_left_ = 0;
             set_status("New document");
         });
@@ -1827,13 +1894,16 @@ private:
                 return false;
             }
             std::string plain(reinterpret_cast<const char *>(utf8.data), utf8.len);
-            txx_buffer_free(&utf8);
+            txx_buffer_secure_free(&utf8);
             int mixed = 0;
             txx_newline_style nl = txx_text_detect_newlines(
                 reinterpret_cast<const uint8_t *>(plain.data()), plain.size(), &mixed);
             if (nl != TXX_NEWLINE_UNKNOWN) settings_.newline_style = nl;
             buffer_.set_text(plain);
+            wipe_string(plain);
             filepath_ = path; password_.clear(); dirty_ = false; scroll_top_ = 0; scroll_left_ = 0;
+            encrypted_ = false;
+            wipe_string(clipboard_); wipe_string(last_find_); wipe_string(last_replace_);
             syn_lang_ = syn_detect(path);
             set_status("Opened " + base_name(path) + " (plain text)");
             return true;
@@ -1842,6 +1912,7 @@ private:
         std::string encoded(reinterpret_cast<const char *>(raw.data), raw.len);
         txx_buffer_secure_free(&raw);
         show_prompt("Password", true, "", [this, encoded, path](bool ok, std::string pw){
+            StringWiper pw_wiper{pw};
             if (!ok) return;
             txx_buffer out; txx_buffer_init(&out);
             txx_status st = txx_decode_text(
@@ -1859,7 +1930,10 @@ private:
                 reinterpret_cast<const uint8_t *>(plain.data()), plain.size(), &mixed);
             if (nl != TXX_NEWLINE_UNKNOWN) settings_.newline_style = nl;
             buffer_.set_text(plain);
-            filepath_ = path; password_ = pw; dirty_ = false; scroll_top_ = 0; scroll_left_ = 0;
+            wipe_string(plain);
+            filepath_ = path; password_.assign(pw); encrypted_ = true;
+            wipe_string(clipboard_); wipe_string(last_find_); wipe_string(last_replace_);
+            dirty_ = false; scroll_top_ = 0; scroll_left_ = 0;
             syn_lang_ = syn_detect(path);
             set_status("Opened " + base_name(path));
         });
@@ -1868,7 +1942,7 @@ private:
 
     void cmd_save(bool save_as) {
         if (filepath_.empty() || save_as) { open_save_picker(); return; }
-        save_to_current_path();
+        save_to_current_path(encrypted_);
     }
 
     void open_save_picker() {
@@ -1883,44 +1957,57 @@ private:
         picker_open_ = picker_load(start);
     }
 
-    // Write to filepath_. The .txx extension decides encrypted vs plain.
-    void save_to_current_path() {
-        if (has_txx_extension(filepath_)) {
+    // Existing documents keep the format they were opened with. Save As uses
+    // the selected extension as an explicit format choice.
+    void save_to_current_path(bool encrypt) {
+        if (encrypt) {
             ensure_password_then_write();
         } else {
-            password_.clear();
-            write_file();
+            if (write_file(false)) {
+                encrypted_ = false;
+                password_.clear();
+            }
         }
     }
 
     void ensure_password_then_write() {
-        if (!password_.empty()) { write_file(); return; }
+        if (password_.present()) {
+            if (write_file(true)) encrypted_ = true;
+            return;
+        }
         show_prompt("New Password", true, "", [this](bool ok, std::string p1){
-            if (!ok) return;
-            show_prompt("Confirm Password", true, "", [this, p1](bool ok2, std::string p2){
+            if (!ok) { wipe_string(p1); return; }
+            show_prompt("Confirm Password", true, "", [this, p1 = SensitiveString(std::move(p1))]
+                        (bool ok2, std::string p2) mutable {
+                StringWiper p2_wiper{p2};
                 if (!ok2) return;
-                if (p1 != p2 || p1.empty()) {
+                if (p1.value != p2 || p1.value.empty()) {
                     show_alert("Password Error", "Passwords do not match.");
                     return;
                 }
-                password_ = p1; write_file();
+                if (write_file(true, &p1.value)) {
+                    password_.assign(p1.value);
+                    encrypted_ = true;
+                }
             });
         });
     }
 
-    void write_file() {
-        std::string payload = join_with_style(buffer_.text(), settings_.newline_style);
-        bool enc = has_txx_extension(filepath_);
+    bool write_file(bool encrypt, const std::string *password = nullptr) {
+        std::string document = buffer_.text();
+        StringWiper document_wiper{document};
+        std::string payload = join_with_style(document, settings_.newline_style);
+        StringWiper payload_wiper{payload};
         txx_status s;
-        if (enc) {
+        if (encrypt) {
             txx_buffer out; txx_buffer_init(&out);
             s = txx_encode_text(
                 reinterpret_cast<const uint8_t *>(payload.data()), payload.size(),
-                password_.c_str(), nullptr, &out);
+                (password == nullptr ? password_.get() : *password).c_str(), nullptr, &out);
             if (s != TXX_OK) {
                 txx_buffer_secure_free(&out);
                 show_alert("Error", std::string("Encode failed: ") + txx_status_string(s));
-                return;
+                return false;
             }
             s = txx_write_file_atomic(filepath_.c_str(), out.data, out.len);
             txx_buffer_secure_free(&out);
@@ -1930,10 +2017,11 @@ private:
         }
         if (s != TXX_OK) {
             show_alert("Error", std::string("Write failed: ") + txx_status_string(s));
-            return;
+            return false;
         }
         dirty_ = false; config_save(settings_);
-        set_status("Saved " + base_name(filepath_) + (enc ? "" : " (plain text)"));
+        set_status("Saved " + base_name(filepath_) + (encrypt ? "" : " (plain text)"));
+        return true;
     }
 
     void cmd_quit()   { confirm_discard([this]{ screen_->Exit(); }); }
@@ -1948,6 +2036,7 @@ private:
                         if (clipboard_.empty()) return;
                         edit([&]{ buffer_.insert_text(clipboard_); }); }
     void cmd_find()   { show_prompt("Find", false, last_find_, [this](bool ok, std::string q){
+                            StringWiper q_wiper{q};
                             if (!ok || q.empty()) return;
                             last_find_ = q; find_match(q, false, false); }); }
     void cmd_goto()   { show_prompt("Go to Line", false, "", [this](bool ok, std::string v){
@@ -1973,7 +2062,8 @@ private:
 
     bool find_match(const std::string &query, bool previous, bool advance) {
         if (query.empty()) { set_status("Enter search text"); return false; }
-        const std::string document = buffer_.text();
+        std::string document = buffer_.text();
+        StringWiper document_wiper{document};
         std::size_t offset = buffer_.byte_position(buffer_.cursor());
         if (advance && buffer_.has_selection() && buffer_.selected_text() == query)
             offset = buffer_.byte_position(previous ? buffer_.selection_start() : buffer_.selection_end());
@@ -2023,8 +2113,10 @@ private:
 
     void replace_all_matches() {
         if (last_find_.empty()) { set_status("Enter search text"); return; }
-        const std::string document = buffer_.text();
+        std::string document = buffer_.text();
+        StringWiper document_wiper{document};
         std::string result;
+        StringWiper result_wiper{result};
         std::size_t position = 0, count = 0;
         while (true) {
             const auto found = document.find(last_find_, position);
@@ -2195,7 +2287,8 @@ private:
     std::filesystem::path plugin_root_ = plugins::user_directory();
     AppSettings        settings_;
     std::string        filepath_;
-    std::string        password_;
+    SecureString       password_;
+    bool               encrypted_ = false;
     std::string        pending_open_;
     std::string        clipboard_;
     std::string        last_find_;

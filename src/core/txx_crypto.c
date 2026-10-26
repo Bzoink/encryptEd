@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #include "monocypher.h"
+#include "core/txx_format.h"
 #include "platform/secure_mem.h"
 
 txx_kdf_params txx_kdf_default_params(void)
@@ -29,8 +30,12 @@ txx_status txx_derive_key(uint8_t key[TXX_KEY_LEN],
     if (key == NULL || (password == NULL && password_len != 0) || salt == NULL) {
         return TXX_ERR_ARG;
     }
-    if (password_len > UINT32_MAX || params.memory_blocks < 8U * params.lanes || params.passes == 0U ||
-        params.lanes == 0U) {
+    if (password_len > UINT32_MAX ||
+        params.memory_blocks < TXX_MIN_KDF_MEMORY_BLOCKS ||
+        params.memory_blocks > TXX_MAX_KDF_MEMORY_BLOCKS ||
+        params.passes < TXX_MIN_KDF_PASSES || params.passes > TXX_MAX_KDF_PASSES ||
+        params.lanes == 0U || params.lanes > TXX_MAX_KDF_LANES ||
+        params.lanes > params.memory_blocks / 8U) {
         return TXX_ERR_ARG;
     }
     work_area_len = (size_t)params.memory_blocks * 1024U;

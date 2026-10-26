@@ -1,9 +1,11 @@
 #include "tui/edit_buffer.h"
 
 #include <algorithm>
+#include <utility>
 
 extern "C" {
 #include "core/utf8.h"
+#include "platform/secure_mem.h"
 }
 
 namespace {
@@ -17,6 +19,37 @@ enum EditTag {
 }  // namespace
 
 EditBuffer::EditBuffer() = default;
+
+EditBuffer::~EditBuffer() {
+    wipe_lines(lines_);
+    wipe_history(undo_);
+    wipe_history(redo_);
+}
+
+void EditBuffer::wipe_lines(std::vector<std::string> &lines) {
+    for (auto &line : lines) {
+        if (!line.empty()) txx_secure_zero(line.data(), line.size());
+        line.clear();
+    }
+    lines.clear();
+}
+
+void EditBuffer::wipe_history(std::vector<Snapshot> &history) {
+    for (auto &snapshot : history) wipe_lines(snapshot.lines);
+    history.clear();
+}
+
+void EditBuffer::clear_sensitive() {
+    wipe_lines(lines_);
+    wipe_history(undo_);
+    wipe_history(redo_);
+    lines_.emplace_back();
+    cursor_ = Position{};
+    anchor_ = Position{};
+    selection_cursor_ = Position{};
+    has_selection_ = false;
+    last_tag_ = TAG_NONE;
+}
 
 int EditBuffer::cp_length(const std::string &s) {
     int n = 0;
@@ -67,26 +100,29 @@ int EditBuffer::line_length(int i) const {
 }
 
 void EditBuffer::set_text(const std::string &text) {
-    lines_.clear();
+    std::vector<std::string> parsed;
     std::string cur;
     for (char ch : text) {
         if (ch == '\n') {
             if (!cur.empty() && cur.back() == '\r') cur.pop_back();
-            lines_.push_back(cur);
+            parsed.push_back(cur);
+            if (!cur.empty()) txx_secure_zero(cur.data(), cur.size());
             cur.clear();
         } else {
             cur.push_back(ch);
         }
     }
     if (!cur.empty() && cur.back() == '\r') cur.pop_back();
-    lines_.push_back(cur);
-    if (lines_.empty()) lines_.emplace_back();
+    parsed.push_back(cur);
+    if (!cur.empty()) txx_secure_zero(cur.data(), cur.size());
+    wipe_lines(lines_);
+    wipe_history(undo_);
+    wipe_history(redo_);
+    lines_.swap(parsed);
     cursor_ = Position{};
     anchor_ = Position{};
     selection_cursor_ = Position{};
     has_selection_ = false;
-    undo_.clear();
-    redo_.clear();
     last_tag_ = TAG_NONE;
 }
 
@@ -149,12 +185,15 @@ void EditBuffer::move_to(Position p, bool extend) {
 void EditBuffer::push_undo(int tag) {
     // Coalesce consecutive same-tag edits into a single undo step.
     if (tag != TAG_STRUCTURAL && tag == last_tag_ && !undo_.empty()) {
-        redo_.clear();
+        wipe_history(redo_);
         return;
     }
     undo_.push_back(Snapshot{lines_, cursor_, anchor_, selection_cursor_, has_selection_});
-    if (undo_.size() > 500) undo_.erase(undo_.begin());
-    redo_.clear();
+    if (undo_.size() > 500) {
+        wipe_lines(undo_.front().lines);
+        undo_.erase(undo_.begin());
+    }
+    wipe_history(redo_);
     last_tag_ = tag;
 }
 
@@ -188,19 +227,26 @@ void EditBuffer::replace_range(Position a, Position b, const std::string &with) 
     std::string tail = lines_[static_cast<std::size_t>(b.line)].substr(
         col_to_byte(lines_[static_cast<std::size_t>(b.line)], b.col));
 
-    lines_.erase(lines_.begin() + a.line, lines_.begin() + b.line + 1);
-
-    // Split `with` into segments by '\n'.
+    // Split before erasing so `with` can safely refer to a current line.
     std::vector<std::string> segs{std::string()};
     for (char ch : with) {
         if (ch == '\n') segs.emplace_back();
         else if (ch != '\r') segs.back().push_back(ch);
     }
 
+    for (int line = a.line; line <= b.line; ++line) {
+        auto &removed = lines_[static_cast<std::size_t>(line)];
+        if (!removed.empty()) txx_secure_zero(removed.data(), removed.size());
+    }
+    lines_.erase(lines_.begin() + a.line, lines_.begin() + b.line + 1);
+
     if (segs.size() == 1) {
         std::string merged = head + segs[0] + tail;
         lines_.insert(lines_.begin() + a.line, merged);
-        cursor_ = Position{a.line, byte_to_col(head + segs[0], (head + segs[0]).size())};
+        std::string cursor_text = head + segs[0];
+        cursor_ = Position{a.line, byte_to_col(cursor_text, cursor_text.size())};
+        if (!merged.empty()) txx_secure_zero(merged.data(), merged.size());
+        if (!cursor_text.empty()) txx_secure_zero(cursor_text.data(), cursor_text.size());
     } else {
         std::vector<std::string> ins;
         ins.push_back(head + segs.front());
@@ -210,7 +256,12 @@ void EditBuffer::replace_range(Position a, Position b, const std::string &with) 
         ins.push_back(lastseg + tail);
         lines_.insert(lines_.begin() + a.line, ins.begin(), ins.end());
         cursor_ = Position{last_line, cp_length(lastseg)};
+        wipe_lines(ins);
+        if (!lastseg.empty()) txx_secure_zero(lastseg.data(), lastseg.size());
     }
+    if (!head.empty()) txx_secure_zero(head.data(), head.size());
+    if (!tail.empty()) txx_secure_zero(tail.data(), tail.size());
+    wipe_lines(segs);
     has_selection_ = false;
 }
 
@@ -369,9 +420,12 @@ void EditBuffer::duplicate_line() {
 void EditBuffer::remove_line() {
     push_undo(TAG_STRUCTURAL);
     if (line_count() == 1) {
+        if (!lines_[0].empty()) txx_secure_zero(lines_[0].data(), lines_[0].size());
         lines_[0].clear();
         cursor_ = Position{0, 0};
     } else {
+        auto &removed = lines_[static_cast<std::size_t>(cursor_.line)];
+        if (!removed.empty()) txx_secure_zero(removed.data(), removed.size());
         lines_.erase(lines_.begin() + cursor_.line);
         if (cursor_.line >= line_count()) cursor_.line = line_count() - 1;
         cursor_.col = std::min(cursor_.col, line_length(cursor_.line));
@@ -383,8 +437,11 @@ void EditBuffer::undo() {
     if (undo_.empty()) return;
     redo_.push_back(Snapshot{lines_, cursor_, anchor_, selection_cursor_, has_selection_});
     Snapshot s = undo_.back();
+    wipe_lines(undo_.back().lines);
     undo_.pop_back();
+    wipe_lines(lines_);
     lines_ = s.lines;
+    wipe_lines(s.lines);
     cursor_ = s.cursor;
     anchor_ = s.anchor;
     selection_cursor_ = s.selection_cursor;
@@ -396,8 +453,11 @@ void EditBuffer::redo() {
     if (redo_.empty()) return;
     undo_.push_back(Snapshot{lines_, cursor_, anchor_, selection_cursor_, has_selection_});
     Snapshot s = redo_.back();
+    wipe_lines(redo_.back().lines);
     redo_.pop_back();
+    wipe_lines(lines_);
     lines_ = s.lines;
+    wipe_lines(s.lines);
     cursor_ = s.cursor;
     anchor_ = s.anchor;
     selection_cursor_ = s.selection_cursor;
