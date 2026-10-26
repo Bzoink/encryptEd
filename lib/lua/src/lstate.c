@@ -354,6 +354,8 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud, unsigned seed) {
   incnny(L);  /* main thread is always non yieldable */
   g->frealloc = f;
   g->ud = ud;
+  g->workf = NULL;
+  g->workud = NULL;
   g->warnf = NULL;
   g->ud_warn = NULL;
   g->seed = seed;

@@ -124,7 +124,7 @@ target_link_libraries(encrypted_core PUBLIC
     monocypher
 )
 if(WIN32)
-    target_link_libraries(encrypted_core PUBLIC bcrypt)
+    target_link_libraries(encrypted_core PUBLIC bcrypt advapi32)
 endif()
 encrypted_apply_hardening(encrypted_core)
 
@@ -510,6 +510,26 @@ target_compile_definitions(plugin_tests PRIVATE ENCRYPTED_SOURCE_DIR="${CMAKE_CU
 encrypted_make_windows_self_contained(plugin_tests -static-libstdc++)
 encrypted_apply_hardening(plugin_tests)
 add_test(NAME plugin_tests COMMAND plugin_tests)
+set_tests_properties(plugin_tests PROPERTIES TIMEOUT 30)
+
+add_executable(file_format_tests tests/file_format_tests.cpp)
+target_include_directories(file_format_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+encrypted_make_windows_self_contained(file_format_tests -static-libstdc++)
+encrypted_apply_hardening(file_format_tests)
+add_test(NAME file_format_tests COMMAND file_format_tests)
+
+add_executable(microz_cleanup_tests tests/microz_cleanup_tests.c)
+encrypted_make_windows_self_contained(microz_cleanup_tests)
+encrypted_apply_hardening(microz_cleanup_tests)
+add_test(NAME microz_cleanup_tests COMMAND microz_cleanup_tests)
+
+if(WIN32)
+    add_executable(windows_file_io_tests tests/windows_file_io_tests.c)
+    target_link_libraries(windows_file_io_tests PRIVATE encrypted_core)
+    encrypted_make_windows_self_contained(windows_file_io_tests)
+    encrypted_apply_hardening(windows_file_io_tests)
+    add_test(NAME windows_file_io_tests COMMAND windows_file_io_tests)
+endif()
 
 add_executable(default_plugin_tests tests/default_plugin_tests.cpp)
 target_link_libraries(default_plugin_tests PRIVATE encrypted_plugins)
@@ -604,6 +624,10 @@ add_test(NAME tui_plugin_tests COMMAND tui_plugin_tests)
 if(TARGET etui AND UNIX AND NOT CMAKE_CROSSCOMPILING)
     find_package(Python3 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME tui_save_security_smoke
+            COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/save_security_smoke.py
+                $<TARGET_FILE:etui> $<TARGET_FILE:encrypted_cli>)
+        set_tests_properties(tui_save_security_smoke PROPERTIES TIMEOUT 60)
         add_test(NAME tui_plugin_smoke
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/plugin_smoke.py
                 $<TARGET_FILE:etui>)

@@ -39,6 +39,7 @@ extern "C" {
 #include "app/size_format.h"
 #include "gui/text_transform.h"
 #include "tui/clipboard.h"
+#include "app/file_format.h"
 #include "tui/config.h"
 #include "tui/plugin_buffer.h"
 #include "tui/plugin_dialog.h"
@@ -1009,9 +1010,8 @@ private:
         if (save_name_.empty()) { show_alert("Save", "Enter a file name."); return; }
         std::filesystem::path full = picker_dir_ / save_name_;
         picker_open_ = false;
-        filepath_ = full.string();
-        syn_lang_ = syn_detect(filepath_);
-        save_to_current_path(has_txx_extension(filepath_));
+        const std::string path = full.string();
+        save_to_path(path, has_txx_extension(path));
     }
 
     bool picker_event(Event e) {
@@ -1862,13 +1862,6 @@ private:
         return len >= 8 && memcmp(data, kMagic, 8) == 0;
     }
 
-    static bool has_txx_extension(const std::string &path) {
-        if (path.size() < 4) return false;
-        std::string tail = path.substr(path.size() - 4);
-        for (char &c : tail) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-        return tail == ".txx";
-    }
-
     // Returns true once the file has loaded or a password prompt was launched;
     // false (with an alert shown) when the file is unreadable or not text — the
     // file picker uses this to decide whether to stay open.
@@ -1942,7 +1935,7 @@ private:
 
     void cmd_save(bool save_as) {
         if (filepath_.empty() || save_as) { open_save_picker(); return; }
-        save_to_current_path(encrypted_);
+        save_to_path(filepath_, encrypted_);
     }
 
     void open_save_picker() {
@@ -1959,25 +1952,25 @@ private:
 
     // Existing documents keep the format they were opened with. Save As uses
     // the selected extension as an explicit format choice.
-    void save_to_current_path(bool encrypt) {
+    void save_to_path(std::string path, bool encrypt) {
         if (encrypt) {
-            ensure_password_then_write();
+            ensure_password_then_write(std::move(path));
+        } else if (encrypted_) {
+            show_confirm("Save Plain Text", "Save an unencrypted copy of this document?",
+                         [this, path](bool ok) { if (ok) write_file(path, false); });
         } else {
-            if (write_file(false)) {
-                encrypted_ = false;
-                password_.clear();
-            }
+            write_file(path, false);
         }
     }
 
-    void ensure_password_then_write() {
+    void ensure_password_then_write(std::string path) {
         if (password_.present()) {
-            if (write_file(true)) encrypted_ = true;
+            write_file(path, true);
             return;
         }
-        show_prompt("New Password", true, "", [this](bool ok, std::string p1){
+        show_prompt("New Password", true, "", [this, path](bool ok, std::string p1){
             if (!ok) { wipe_string(p1); return; }
-            show_prompt("Confirm Password", true, "", [this, p1 = SensitiveString(std::move(p1))]
+            show_prompt("Confirm Password", true, "", [this, path, p1 = SensitiveString(std::move(p1))]
                         (bool ok2, std::string p2) mutable {
                 StringWiper p2_wiper{p2};
                 if (!ok2) return;
@@ -1985,15 +1978,14 @@ private:
                     show_alert("Password Error", "Passwords do not match.");
                     return;
                 }
-                if (write_file(true, &p1.value)) {
+                if (write_file(path, true, &p1.value)) {
                     password_.assign(p1.value);
-                    encrypted_ = true;
                 }
             });
         });
     }
 
-    bool write_file(bool encrypt, const std::string *password = nullptr) {
+    bool write_file(const std::string &path, bool encrypt, const std::string *password = nullptr) {
         std::string document = buffer_.text();
         StringWiper document_wiper{document};
         std::string payload = join_with_style(document, settings_.newline_style);
@@ -2009,16 +2001,21 @@ private:
                 show_alert("Error", std::string("Encode failed: ") + txx_status_string(s));
                 return false;
             }
-            s = txx_write_file_atomic(filepath_.c_str(), out.data, out.len);
+            s = txx_write_file_atomic(path.c_str(), out.data, out.len);
             txx_buffer_secure_free(&out);
         } else {
-            s = txx_write_file_atomic(filepath_.c_str(),
+            s = txx_write_file_atomic(path.c_str(),
                     reinterpret_cast<const uint8_t *>(payload.data()), payload.size());
         }
         if (s != TXX_OK) {
             show_alert("Error", std::string("Write failed: ") + txx_status_string(s));
             return false;
         }
+        // Commit the destination and format only after the write succeeds.
+        filepath_ = path;
+        encrypted_ = encrypt;
+        syn_lang_ = syn_detect(filepath_);
+        if (!encrypt) password_.clear();
         dirty_ = false; config_save(settings_);
         set_status("Saved " + base_name(filepath_) + (encrypt ? "" : " (plain text)"));
         return true;

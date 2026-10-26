@@ -327,6 +327,8 @@ typedef struct LX {
 typedef struct global_State {
   lua_Alloc frealloc;  /* function to reallocate memory */
   void *ud;         /* auxiliary data to 'frealloc' */
+  lua_WorkFunction workf;  /* EncryptEd native-library work budget */
+  void *workud;
   l_mem GCtotalbytes;  /* number of bytes currently allocated + debt */
   l_mem GCdebt;  /* bytes counted but not yet allocated */
   l_mem GCmarked;  /* number of objects marked in a GC cycle */

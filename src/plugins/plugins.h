@@ -24,6 +24,8 @@ struct Limits {
     std::size_t document_bytes = 16 * 1024 * 1024;
     std::size_t script_bytes = 1024 * 1024;
     std::size_t instructions = 10000000;
+    std::size_t native_work = 10000000;
+    unsigned execution_milliseconds = 5000; // dialog wait time is excluded
 };
 
 enum class DialogKind { Input, Choose, Confirm, Message };

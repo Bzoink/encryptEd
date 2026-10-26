@@ -378,6 +378,12 @@ LUA_API size_t  (lua_stringtonumber) (lua_State *L, const char *s);
 LUA_API lua_Alloc (lua_getallocf) (lua_State *L, void **ud);
 LUA_API void      (lua_setallocf) (lua_State *L, lua_Alloc f, void *ud);
 
+/* EncryptEd extension: interruptible native-library work. The callback may
+** raise a Lua error and must only be charged from protected execution. */
+typedef void (*lua_WorkFunction) (lua_State *L, size_t units, void *ud);
+LUA_API void (lua_setworkf) (lua_State *L, lua_WorkFunction f, void *ud);
+LUA_API void (lua_checkwork) (lua_State *L, size_t units);
+
 LUA_API void (lua_toclose) (lua_State *L, int idx);
 LUA_API void (lua_closeslot) (lua_State *L, int idx);
 

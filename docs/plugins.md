@@ -215,13 +215,20 @@ Limits per run:
 - 16 MiB for the input and resulting document, checked separately from Lua memory.
 - 1 MiB of script source.
 - 10 million Lua instructions, checked in batches of 1,000.
+- 10 million native work units, covering pattern matching, literal searches,
+  string transformations, table operations, and UTF-8 scans. Work is charged
+  for processed bytes/elements and matching attempts, including backtracking.
+- Five seconds of execution time, checked at Lua instruction, native work,
+  and editor API boundaries. Time spent waiting for plugin dialogs is excluded.
 - 100 dialogs; 64 KiB per prompt, initial value, or input response; at most 256
   choices totaling 64 KiB.
 
-Exceeding a limit fails the run without committing edits. The instruction counter
-does not measure time spent in native string operations or dialogs, so it is not a
-hard wall-clock timeout. This is an embedded language sandbox, not OS process
-isolation. Runtime-owned allocations and document copies are wiped when released;
+Exceeding a limit fails the run without committing edits. Native work checks make
+expensive pattern searches and large table moves interruptible, even when no Lua
+instructions execute inside them. The time limit is cooperative: a bounded
+operation already in progress can finish before the next check. The runtime uses
+an embedded language sandbox without OS process isolation. Runtime-owned
+allocations and document copies are wiped when released;
 FLTK widget storage can only be cleared on a best-effort basis.
 
 ## Development
@@ -240,7 +247,9 @@ ctest --test-dir build --output-on-failure
 ```
 
 `plugin_tests` checks execution, restrictions, failure rollback, discovery, and
-the shipped examples. When FLTK is available, `plugin_buffer_tests` checks actual
+the shipped examples, including native-operation exhaustion and dialog timing.
+The bundled Lua contains local work-budget hooks; see `lib/lua/ENCRYPTED.md`
+before updating it. When FLTK is available, `plugin_buffer_tests` checks actual
 buffer undo/redo and no-op behavior without requiring a display.
 
 For the optional Linux GUI regression (requires Xvfb and xdotool):

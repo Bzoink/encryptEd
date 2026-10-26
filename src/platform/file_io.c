@@ -88,6 +88,46 @@ static int make_suffix(char suffix[17])
 }
 
 #if defined(_WIN32)
+// Temporary plaintext must be private even when the destination directory has
+// permissive inheritable ACLs. ReplaceFileW later preserves an existing file's
+// DACL; new files retain this owner-only ACL, like mode 0600 on POSIX.
+static int private_file_security(SECURITY_DESCRIPTOR *descriptor, PACL *acl)
+{
+    HANDLE token = NULL;
+    TOKEN_USER *user = NULL;
+    DWORD token_bytes = 0;
+    DWORD acl_bytes;
+    int ok = 0;
+
+    *acl = NULL;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return 0;
+    }
+    GetTokenInformation(token, TokenUser, NULL, 0, &token_bytes);
+    if (token_bytes == 0) goto cleanup;
+    user = (TOKEN_USER *)malloc(token_bytes);
+    if (user == NULL || !GetTokenInformation(token, TokenUser, user, token_bytes, &token_bytes)) {
+        goto cleanup;
+    }
+    acl_bytes = sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + GetLengthSid(user->User.Sid);
+    *acl = (PACL)malloc(acl_bytes);
+    if (*acl == NULL ||
+        !InitializeAcl(*acl, acl_bytes, ACL_REVISION) ||
+        !AddAccessAllowedAce(*acl, ACL_REVISION, FILE_ALL_ACCESS, user->User.Sid) ||
+        !InitializeSecurityDescriptor(descriptor, SECURITY_DESCRIPTOR_REVISION) ||
+        !SetSecurityDescriptorDacl(descriptor, TRUE, *acl, FALSE) ||
+        !SetSecurityDescriptorControl(descriptor, SE_DACL_PROTECTED, SE_DACL_PROTECTED)) {
+        goto cleanup;
+    }
+    ok = 1;
+
+cleanup:
+    free(user);
+    CloseHandle(token);
+    if (!ok) { free(*acl); *acl = NULL; }
+    return ok;
+}
+
 static wchar_t *wide_from_utf8(const char *path)
 {
     int count;
@@ -296,6 +336,9 @@ txx_status txx_write_file_atomic(const char *path, const uint8_t *data, size_t l
 #if defined(_WIN32)
     wchar_t *wide_path = NULL;
     wchar_t *tmp_path = NULL;
+    SECURITY_DESCRIPTOR descriptor;
+    SECURITY_ATTRIBUTES attributes;
+    PACL acl = NULL;
     txx_status status = TXX_ERR_IO;
     int attempt;
 
@@ -306,6 +349,10 @@ txx_status txx_write_file_atomic(const char *path, const uint8_t *data, size_t l
     if (wide_path == NULL) {
         return TXX_ERR_IO;
     }
+    if (!private_file_security(&descriptor, &acl)) goto cleanup;
+    attributes.nLength = sizeof(attributes);
+    attributes.lpSecurityDescriptor = &descriptor;
+    attributes.bInheritHandle = FALSE;
 
     for (attempt = 0; attempt < 8; ++attempt) {
         HANDLE file;
@@ -316,7 +363,7 @@ txx_status txx_write_file_atomic(const char *path, const uint8_t *data, size_t l
         if (tmp_path == NULL) {
             goto cleanup;
         }
-        file = CreateFileW(tmp_path, GENERIC_WRITE, 0, NULL, CREATE_NEW,
+        file = CreateFileW(tmp_path, GENERIC_WRITE, 0, &attributes, CREATE_NEW,
                            FILE_ATTRIBUTE_NORMAL, NULL);
         if (file == INVALID_HANDLE_VALUE) {
             DWORD error = GetLastError();
@@ -350,15 +397,29 @@ txx_status txx_write_file_atomic(const char *path, const uint8_t *data, size_t l
             DeleteFileW(tmp_path);
             goto cleanup;
         }
-        if (!MoveFileExW(tmp_path, wide_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-            DeleteFileW(tmp_path);
-            goto cleanup;
+        if (!ReplaceFileW(wide_path, tmp_path, NULL, 0, NULL, NULL)) {
+            DWORD error = GetLastError();
+            // These failures can occur after the original has been renamed or
+            // removed. Keep the replacement for recovery instead of deleting
+            // the last on-disk copy. Other failures leave the original intact.
+            if (error == ERROR_UNABLE_TO_MOVE_REPLACEMENT ||
+                error == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) {
+                goto cleanup;
+            }
+            // A new destination has no ACL to preserve. Never fall back to
+            // replacing an existing file after an ACL/permission failure.
+            if (error != ERROR_FILE_NOT_FOUND ||
+                !MoveFileExW(tmp_path, wide_path, MOVEFILE_WRITE_THROUGH)) {
+                DeleteFileW(tmp_path);
+                goto cleanup;
+            }
         }
         status = TXX_OK;
         goto cleanup;
     }
 
 cleanup:
+    free(acl);
     free(tmp_path);
     free(wide_path);
     return status;

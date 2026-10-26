@@ -57,6 +57,7 @@ extern "C" {
 }
 
 #include "app/about.h"
+#include "app/file_format.h"
 #include "app/size_format.h"
 #include "gui/text_transform.h"
 #include "gui/md_highlight.h"
@@ -2340,8 +2341,7 @@ class EncryptEdWindow : public Fl_Double_Window {
         if (fc.show() != 0) return;
 
         std::string path = fc.filename();
-        bool open_as_txx = path.size() >= 4 &&
-            path.compare(path.size() - 4, 4, ".txx") == 0;
+        bool open_as_txx = has_txx_extension(path);
 
         if (open_as_txx) {
             std::string pw = ask_password("Open", "Password:");
@@ -2489,12 +2489,19 @@ class EncryptEdWindow : public Fl_Double_Window {
 #endif
                            ;
             if (has_ext) {
-                save_as_txx = (path.compare(dot, std::string::npos, ".txx") == 0);
+                save_as_txx = has_txx_extension(path);
             } else {
                 save_as_txx = (fc.filter_value() == 0);
                 path += save_as_txx ? ".txx" : ".txt";
             }
         }
+
+        // Button 1 is the default; fl_choice_n also distinguishes Escape/close
+        // from button 0, so only an explicit export accepts this transition.
+        if (!save_as_txx && is_txx_ &&
+            fl_choice_n("Save an unencrypted copy of this document?",
+                        "Save Plain Text", "Cancel", nullptr) != 0)
+            return false;
 
         if (save_as_txx) {
             std::string pw;

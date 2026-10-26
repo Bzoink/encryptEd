@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <chrono>
+#include <thread>
 
 using namespace plugins;
 namespace fs = std::filesystem;
@@ -348,9 +349,56 @@ static void playground_tests()
     }
 }
 
+static void native_budget_tests()
+{
+    MockDialogs ui;
+    Document d;
+    d.text = "original document";
+    const char *scripts[] = {
+        "local s=string.rep('a',100000); s:match('a*a*a*a*b')",
+        "local s=string.rep('a',100000); s:gsub('a*a*a*a*b','z')",
+        "local s=string.rep('a',100000); for v in s:gmatch('a*a*a*a*b') do end",
+        "local s=string.rep('a',20000); s:find(string.rep('a',10000)..'b',1,true)",
+        "local s=string.rep('(',10000); s:match('%b()')",
+        "string.rep('a',1000):match('['..string.rep('z',10000)..']')",
+        "table.move({},1,math.maxinteger,1)",
+        "table.move({},1,math.maxinteger-1,2)"
+    };
+    for (const char *script : scripts) {
+        // The first pattern is the audit reproduction, under default limits.
+        auto r = run(std::string("editor.set_text('staged'); ") + script,
+                     "native-budget", d, ui);
+        CHECK(r.status == Status::Error);
+        CHECK(r.error.find("native operation limit") != std::string::npos);
+        CHECK(r.document.text.empty() && d.text == "original document");
+    }
+    CHECK(run("assert(('abc'):match('a.c') == 'abc')", "fresh-budget", d, ui).status == Status::Success);
+
+    Limits limits;
+    limits.execution_milliseconds = 0;
+    CHECK(run("editor.set_text('staged')", "deadline", d, ui, limits).status == Status::Error);
+    limits = Limits{};
+    limits.native_work = 0;
+    CHECK(run("return string.rep('x',2)", "zero-budget", d, ui, limits).status == Status::Error);
+
+    struct SlowDialogs : DialogHost {
+        DialogReply show(const DialogRequest &) override {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            DialogReply reply;
+            reply.accepted = true;
+            return reply;
+        }
+    } slow;
+    limits = Limits{};
+    limits.execution_milliseconds = 100;
+    auto r = run("ui.message('wait'); editor.set_text('after dialog')", "dialog-time", d, slow, limits);
+    CHECK(r.status == Status::Success && r.document.text == "after dialog");
+}
+
 int main()
 {
     runtime_tests(); catalog_tests(); user_directory_tests(); example_tests(); install_tests(); playground_tests();
+    native_budget_tests();
     if (!failures) std::puts("Plugin tests passed.");
     return failures ? 1 : 0;
 }

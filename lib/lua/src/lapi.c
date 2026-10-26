@@ -1340,6 +1340,20 @@ LUA_API void lua_setallocf (lua_State *L, lua_Alloc f, void *ud) {
 }
 
 
+LUA_API void lua_setworkf (lua_State *L, lua_WorkFunction f, void *ud) {
+  lua_lock(L);
+  G(L)->workf = f;
+  G(L)->workud = ud;
+  lua_unlock(L);
+}
+
+
+LUA_API void lua_checkwork (lua_State *L, size_t units) {
+  if (G(L)->workf != NULL)
+    G(L)->workf(L, units, G(L)->workud);
+}
+
+
 void lua_setwarnf (lua_State *L, lua_WarnFunction f, void *ud) {
   lua_lock(L);
   G(L)->ud_warn = ud;

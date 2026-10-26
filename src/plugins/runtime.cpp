@@ -10,6 +10,7 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -26,6 +27,9 @@ struct Context {
     Limits limits;
     std::size_t allocated = 0;
     std::size_t remaining = 0;
+    std::size_t native_remaining = 0;
+    std::size_t clock_work = 0;
+    std::chrono::steady_clock::time_point deadline;
     unsigned dialog_count = 0;
     bool cancelled = false;
     std::string scratch;
@@ -69,9 +73,28 @@ Context &context(lua_State *L)
     return *static_cast<Context *>(ud);
 }
 
+void check_deadline(lua_State *L, Context &c)
+{
+    if (std::chrono::steady_clock::now() >= c.deadline)
+        luaL_error(L, "Plugin execution time limit exceeded.");
+}
+
+void native_work(lua_State *L, std::size_t units, void *ud)
+{
+    auto &c = *static_cast<Context *>(ud);
+    if (units > c.native_remaining)
+        luaL_error(L, "Plugin native operation limit exceeded.");
+    c.native_remaining -= units;
+    if (units >= 1000 || c.clock_work >= 1000 - units) {
+        c.clock_work = 0;
+        check_deadline(L, c);
+    } else c.clock_work += units;
+}
+
 void instruction_hook(lua_State *L, lua_Debug *)
 {
     auto &c = context(L);
+    check_deadline(L, c);
     if (c.remaining <= 1000) luaL_error(L, "Plugin instruction limit exceeded.");
     c.remaining -= 1000;
 }
@@ -236,7 +259,11 @@ int dispatch(lua_State *L)
             }
         }
         wipe(c.reply.text);
-        c.reply = c.dialogs->show(c.request);
+        {
+            const auto start = std::chrono::steady_clock::now();
+            c.reply = c.dialogs->show(c.request);
+            c.deadline += std::chrono::steady_clock::now() - start;
+        }
         if (!c.reply.accepted) { c.cancelled = true; return luaL_error(L, "Plugin cancelled."); }
         if (op == Input) {
             if (c.reply.text.size() > 65536) return luaL_error(L, "Dialog response is too long.");
@@ -260,7 +287,12 @@ int dispatch(lua_State *L)
 int guarded_dispatch(lua_State *L)
 {
     auto &c = context(L);
-    try { return dispatch(L); }
+    try {
+        check_deadline(L, c);
+        const int results = dispatch(L);
+        check_deadline(L, c);
+        return results;
+    }
     catch (const std::exception &e) { std::snprintf(c.error, sizeof(c.error), "%s", e.what()); }
     catch (...) { std::snprintf(c.error, sizeof(c.error), "%s", "Plugin host operation failed."); }
     return luaL_error(L, "%s", c.error);
@@ -318,6 +350,7 @@ Result run(const std::string &source, const std::string &name, const Document &d
     Result result;
     Context c;
     c.limits = limits; c.remaining = limits.instructions; c.dialogs = &dialogs;
+    c.native_remaining = limits.native_work;
     lua_State *L = nullptr;
     try {
         if (source.size() > limits.script_bytes) throw std::runtime_error("Plugin script size limit exceeded.");
@@ -339,11 +372,16 @@ Result run(const std::string &source, const std::string &name, const Document &d
         lua_pushcfunction(L, initialize);
         int status = lua_pcall(L, 0, 0, 0);
         if (status == LUA_OK) {
+            c.deadline = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds(limits.execution_milliseconds);
+            lua_setworkf(L, native_work, &c);
             lua_sethook(L, instruction_hook, LUA_MASKCOUNT, 1000);
             status = luaL_loadbufferx(L, source.data(), source.size(), name.c_str(), "t");
             if (status == LUA_OK) status = lua_pcall(L, 0, 0, 0);
         }
         if (status == LUA_OK) {
+            if (std::chrono::steady_clock::now() >= c.deadline)
+                throw std::runtime_error("Plugin execution time limit exceeded.");
             result.document = c.document;
             result.status = Status::Success;
         } else if (c.cancelled) result.status = Status::Cancelled;

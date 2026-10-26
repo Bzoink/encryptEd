@@ -98,6 +98,7 @@ static int utflen (lua_State *L) {
                    "initial position out of bounds");
   luaL_argcheck(L, --posj < (lua_Integer)len, 3,
                    "final position out of bounds");
+  if (posj >= posi) lua_checkwork(L, (size_t)(posj - posi) + 1);
   while (posi <= posj) {
     const char *s1 = utf8_decode(s + posi, NULL, !lax);
     if (s1 == NULL) {  /* conversion error? */
@@ -130,6 +131,7 @@ static int codepoint (lua_State *L) {
   if (posi > pose) return 0;  /* empty interval; return no values */
   if (pose - posi >= INT_MAX)  /* (lua_Integer -> int) overflow? */
     return luaL_error(L, "string slice too long");
+  lua_checkwork(L, (size_t)(pose - posi) + 1);
   n = (int)(pose -  posi) + 1;  /* upper bound for number of returns */
   luaL_checkstack(L, n, "string slice too long");
   n = 0;  /* count the number of returns */
@@ -188,7 +190,7 @@ static int byteoffset (lua_State *L) {
                    "position out of bounds");
   if (n == 0) {
     /* find beginning of current byte sequence */
-    while (posi > 0 && iscontp(s + posi)) posi--;
+    while (posi > 0 && iscontp(s + posi)) { lua_checkwork(L, 1); posi--; }
   }
   else {
     if (iscontp(s + posi))
@@ -196,6 +198,7 @@ static int byteoffset (lua_State *L) {
     if (n < 0) {
       while (n < 0 && posi > 0) {  /* move back */
         do {  /* find beginning of previous character */
+          lua_checkwork(L, 1);
           posi--;
         } while (posi > 0 && iscontp(s + posi));
         n++;
@@ -205,6 +208,7 @@ static int byteoffset (lua_State *L) {
       n--;  /* do not move for 1st character */
       while (n > 0 && posi < (lua_Integer)len) {
         do {  /* find beginning of next character */
+          lua_checkwork(L, 1);
           posi++;
         } while (iscontp(s + posi));  /* (cannot pass final '\0') */
         n--;
@@ -219,8 +223,10 @@ static int byteoffset (lua_State *L) {
   if ((s[posi] & 0x80) != 0) {  /* multi-byte character? */
     if (iscont(s[posi]))
       return luaL_error(L, "initial position is a continuation byte");
-    while (iscontp(s + posi + 1))
-      posi++;  /* skip to last continuation byte */
+    while (iscontp(s + posi + 1)) {
+      lua_checkwork(L, 1);
+      posi++;
+    }  /* skip to last continuation byte */
   }
   /* else one-byte character: final position is the initial one */
   lua_pushinteger(L, posi + 1);  /* 'posi' now is the final position */
@@ -233,7 +239,7 @@ static int iter_aux (lua_State *L, int strict) {
   const char *s = luaL_checklstring(L, 1, &len);
   lua_Unsigned n = (lua_Unsigned)lua_tointeger(L, 2);
   if (n < len) {
-    while (iscontp(s + n)) n++;  /* go to next character */
+    while (iscontp(s + n)) { lua_checkwork(L, 1); n++; }  /* go to next character */
   }
   if (n >= len)  /* (also handles original 'n' being negative) */
     return 0;  /* no more codepoints */

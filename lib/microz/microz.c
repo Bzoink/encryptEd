@@ -2809,6 +2809,12 @@ extern "C"
             return MZ_STREAM_ERROR;
         if (pStream->state)
         {
+            // The sliding dictionary holds decrypted document bytes on both
+            // success and error paths. Erase all state before releasing it.
+            volatile mz_uint8 *p = (volatile mz_uint8 *)pStream->state;
+            size_t n = sizeof(inflate_state);
+            while (n-- != 0)
+                *p++ = 0;
             pStream->zfree(pStream->opaque, pStream->state);
             pStream->state = NULL;
         }

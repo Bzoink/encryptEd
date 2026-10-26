@@ -87,6 +87,7 @@ static int tinsert (lua_State *L) {
       luaL_argcheck(L, (lua_Unsigned)pos - 1u < (lua_Unsigned)e, 2,
                        "position out of bounds");
       for (i = e; i > pos; i--) {  /* move up elements */
+        lua_checkwork(L, 1);
         lua_geti(L, 1, i - 1);
         lua_seti(L, 1, i);  /* t[i] = t[i - 1] */
       }
@@ -110,6 +111,7 @@ static int tremove (lua_State *L) {
                      "position out of bounds");
   lua_geti(L, 1, pos);  /* result = t[pos] */
   for ( ; pos < size; pos++) {
+    lua_checkwork(L, 1);
     lua_geti(L, 1, pos + 1);
     lua_seti(L, 1, pos);  /* t[pos] = t[pos + 1] */
   }
@@ -141,12 +143,14 @@ static int tmove (lua_State *L) {
                   "destination wrap around");
     if (t > e || t <= f || (tt != 1 && !lua_compare(L, 1, tt, LUA_OPEQ))) {
       for (i = 0; i < n; i++) {
+        lua_checkwork(L, 1);
         lua_geti(L, 1, f + i);
         lua_seti(L, tt, t + i);
       }
     }
     else {
       for (i = n - 1; i >= 0; i--) {
+        lua_checkwork(L, 1);
         lua_geti(L, 1, f + i);
         lua_seti(L, tt, t + i);
       }
@@ -158,10 +162,12 @@ static int tmove (lua_State *L) {
 
 
 static void addfield (lua_State *L, luaL_Buffer *b, lua_Integer i) {
+  lua_checkwork(L, 1);
   lua_geti(L, 1, i);
   if (l_unlikely(!lua_isstring(L, -1)))
     luaL_error(L, "invalid value (%s) at index %I in table for 'concat'",
                   luaL_typename(L, -1), (LUAI_UACINT)i);
+  lua_checkwork(L, lua_rawlen(L, -1));
   luaL_addvalue(b);
 }
 
@@ -176,6 +182,7 @@ static int tconcat (lua_State *L) {
   luaL_buffinit(L, &b);
   for (; i < last; i++) {
     addfield(L, &b, i);
+    lua_checkwork(L, lsep);
     luaL_addlstring(&b, sep, lsep);
   }
   if (i == last)  /* add last value (if interval was not empty) */
@@ -215,6 +222,7 @@ static int tunpack (lua_State *L) {
                  !lua_checkstack(L, (int)(++n))))
     return luaL_error(L, "too many results to unpack");
   for (; i < e; i++) {  /* push arg[i..e - 1] (to avoid overflows) */
+    lua_checkwork(L, 1);
     lua_geti(L, 1, i);
   }
   lua_geti(L, 1, e);  /* push last element */
@@ -272,6 +280,9 @@ static void set2 (lua_State *L, IdxT i, IdxT j) {
 ** index 'b' (according to the order of the sort).
 */
 static int sort_comp (lua_State *L, int a, int b) {
+  lua_checkwork(L, 1);
+  if (lua_type(L, a) == LUA_TSTRING) lua_checkwork(L, lua_rawlen(L, a));
+  if (lua_type(L, b) == LUA_TSTRING) lua_checkwork(L, lua_rawlen(L, b));
   if (lua_isnil(L, 2))  /* no function? */
     return lua_compare(L, a, b, LUA_OPLT);  /* a < b */
   else {  /* function */
