@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Search
+
+- Added **regular-expression** find and replace to both `encryptEd` and `etui`
+  (TRE 0.9.0, unmodified, linear-time matching) behind a "Regular expression"
+  checkbox; plain-text search stays the default. Replacements support `\1`–`\9`,
+  `\0`, `\n`, `\t`. The GUI gained a status line and a "Match case" option in `etui`;
+  Replace All is a single undo step in both editors. Both editors now share one
+  search implementation (`src/search/`).
+
+### Fixes and hardening
+
+- Fixed a heap overflow in the GUI cursor-position status update that could crash
+  the editor when undoing past the start of the history.
+- Added a crash reporter that writes a small, private report (version, platform,
+  signal or exception, module+offset stack trace) and records no document
+  material; it is shown once on the next start.
+- Plugin runs now report unexpected host-side failures as plugin errors and added
+  hostile-script regression tests.
+- The GUI Undo and Redo menu items are grayed out when unavailable.
+- **HTML → Compact HTML** now collapses whitespace between tags to one space
+  instead of removing it.
+
 ## 1.3 — 2026-10-26
 
 ### Editor improvements

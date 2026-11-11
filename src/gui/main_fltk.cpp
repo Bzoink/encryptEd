@@ -33,6 +33,7 @@
 #include <map>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef _WIN32
@@ -68,6 +69,7 @@ extern "C" {
 #include "gui/secure_text.h"
 #include "gui/plugin_buffer.h"
 #include "gui/plugin_dialog.h"
+#include "search/search.h"
 
 #ifndef ENCRYPTED_APP_AUTHOR
 #define ENCRYPTED_APP_AUTHOR "Unknown"
@@ -810,7 +812,9 @@ class FindReplaceWindow : public Fl_Window {
     Fl_Input        *find_inp_;
     Fl_Input        *repl_inp_;
     Fl_Check_Button *case_btn_;
-    Fl_Text_Buffer  *buf_    = nullptr;
+    Fl_Check_Button *regex_btn_;
+    Fl_Box          *status_;
+    EditorTextBuffer *buf_   = nullptr;
     Fl_Text_Editor  *editor_ = nullptr;
 
     static void find_cb(Fl_Widget *, void *v)     { static_cast<FindReplaceWindow *>(v)->do_find(); }
@@ -818,81 +822,182 @@ class FindReplaceWindow : public Fl_Window {
     static void repl_all_cb(Fl_Widget *, void *v) { static_cast<FindReplaceWindow *>(v)->do_replace_all(); }
     static void close_cb(Fl_Widget *, void *v)    { static_cast<Fl_Window *>(v)->hide(); }
 
+    // Temporary copy of the document for the search engine; wiped on release.
+    struct DocumentCopy {
+        char *text;
+        int   len;
+        explicit DocumentCopy(Fl_Text_Buffer *b) : text(b->text()), len(b->length()) {}
+        ~DocumentCopy() { gui_secure_free_text(text, static_cast<std::size_t>(len)); }
+        DocumentCopy(const DocumentCopy &) = delete;
+        DocumentCopy &operator=(const DocumentCopy &) = delete;
+        std::string_view view() const { return {text, static_cast<std::size_t>(len)}; }
+    };
+
+    static void wipe(std::string &s)
+    {
+        if (!s.empty()) txx_secure_zero(s.data(), s.size());
+        s.clear();
+    }
+
+    // Messages never contain the search text: it is often the most sensitive
+    // string in an encrypted document.
+    void set_status(const std::string &message)
+    {
+        status_->copy_label(message.c_str());
+        status_->redraw();
+    }
+
+    bool prepare(search::Query &query)
+    {
+        search::Options options;
+        options.regex      = regex_btn_->value() != 0;
+        options.match_case = case_btn_->value() != 0;
+        if (!query.compile(find_inp_->value(), options)) {
+            set_status(query.error());
+            fl_beep();
+            return false;
+        }
+        return true;
+    }
+
     void do_find(bool previous = false)
     {
         if (!buf_ || find_inp_->size() == 0) return;
+        search::Query query;
+        if (!prepare(query)) return;
+
         int start = editor_ ? editor_->insert_position() : 0;
         if (buf_->selected()) {
             int first, last;
             buf_->selection_position(&first, &last);
             start = previous ? first : last;
         }
-        int found = 0;
-        bool matched;
+        DocumentCopy doc(buf_);
+        search::Match match;
+        bool wrapped = false;
+        search::Result result;
         if (previous) {
-            matched = start > 0 && buf_->search_backward(start - 1, find_inp_->value(), &found, case_btn_->value());
-            if (!matched) matched = buf_->search_backward(buf_->length(), find_inp_->value(), &found, case_btn_->value());
-        } else {
-            matched = buf_->search_forward(start, find_inp_->value(), &found, case_btn_->value());
-            if (!matched) matched = buf_->search_forward(0, find_inp_->value(), &found, case_btn_->value());
-        }
-        if (matched) {
-            buf_->select(found, found + static_cast<int>(strlen(find_inp_->value())));
-            if (editor_) {
-                editor_->insert_position(found);
-                editor_->show_insert_position();
+            result = query.find_prev(doc.view(), static_cast<std::size_t>(start), match);
+            if (result == search::Result::NotFound) {
+                result = query.find_prev(doc.view(), doc.view().size(), match);
+                wrapped = true;
             }
-        } else fl_beep();
+        } else {
+            result = query.find_next(doc.view(), static_cast<std::size_t>(start), match);
+            if (result == search::Result::NotFound) {
+                result = query.find_next(doc.view(), 0, match);
+                wrapped = true;
+            }
+        }
+        if (result == search::Result::Error) { set_status(query.error()); fl_beep(); return; }
+        if (result == search::Result::NotFound) { set_status("Not found"); fl_beep(); return; }
+        buf_->select(static_cast<int>(match.whole.start), static_cast<int>(match.whole.end));
+        if (editor_) {
+            editor_->insert_position(static_cast<int>(match.whole.start));
+            editor_->show_insert_position();
+        }
+        set_status(wrapped ? "Found (wrapped)" : "Found");
     }
 
     void do_replace()
     {
         if (!buf_ || find_inp_->size() == 0) return;
-        int first = 0, last = 0, found = 0;
-        if (!buf_->selected() || !buf_->selection_position(&first, &last) ||
-            last - first != find_inp_->size() ||
-            !buf_->search_forward(first, find_inp_->value(), &found, case_btn_->value()) || found != first) {
-            do_find(); return;
+        search::Query query;
+        if (!prepare(query)) return;
+        const std::string replacement = repl_inp_->value();
+        if (!query.check_replacement(replacement)) { set_status(query.error()); fl_beep(); return; }
+
+        int first = 0, last = 0;
+        if (buf_->selected() && buf_->selection_position(&first, &last) && first < last) {
+            std::string expanded;
+            bool replace_it = false;
+            {
+                DocumentCopy doc(buf_);
+                search::Match match;
+                if (query.match_exact(doc.view(), static_cast<std::size_t>(first),
+                                      static_cast<std::size_t>(last), match) == search::Result::Found) {
+                    query.expand(doc.view(), match, replacement, expanded);
+                    replace_it = true;
+                }
+            }
+            if (replace_it) {
+                buf_->replace_selection(expanded.c_str());
+                wipe(expanded);
+            }
         }
-        buf_->replace_selection(repl_inp_->value());
         do_find();
     }
 
     void do_replace_all()
     {
         if (!buf_ || find_inp_->size() == 0) return;
-        int pos      = 0;
-        int count    = 0;
-        int found    = 0;
-        int find_len = static_cast<int>(strlen(find_inp_->value()));
-        int repl_len = static_cast<int>(strlen(repl_inp_->value()));
-        while (buf_->search_forward(pos, find_inp_->value(), &found, case_btn_->value())) {
-            buf_->replace(found, found + find_len, repl_inp_->value());
-            pos = found + repl_len;
-            ++count;
-            if (pos > buf_->length()) break;
+        search::Query query;
+        if (!prepare(query)) return;
+        const std::string replacement = repl_inp_->value();
+        if (!query.check_replacement(replacement)) { set_status(query.error()); fl_beep(); return; }
+
+        std::string result_text;
+        std::size_t count = 0;
+        {
+            DocumentCopy doc(buf_);
+            const search::Result result = query.replace_all(doc.view(), replacement, result_text, count);
+            if (result == search::Result::Error) { set_status(query.error()); fl_beep(); return; }
+            if (result == search::Result::NotFound) { set_status("Not found"); fl_beep(); return; }
+
+            // Replace only the span that changed: the cursor and scroll position
+            // stay put and the whole operation is one undo step.
+            const std::string_view old_text = doc.view();
+            const std::size_t limit = std::min(old_text.size(), result_text.size());
+            std::size_t prefix = 0;
+            while (prefix < limit && old_text[prefix] == result_text[prefix]) ++prefix;
+            auto boundary = [](unsigned char c) { return (c & 0xC0) != 0x80; };
+            while (prefix > 0 && prefix < result_text.size() &&
+                   !boundary(static_cast<unsigned char>(result_text[prefix]))) --prefix;
+            std::size_t suffix = 0;
+            while (suffix < limit - prefix &&
+                   old_text[old_text.size() - 1 - suffix] == result_text[result_text.size() - 1 - suffix]) ++suffix;
+            while (suffix > 0 && !boundary(static_cast<unsigned char>(old_text[old_text.size() - suffix]))) --suffix;
+
+            if (prefix != old_text.size() || old_text.size() != result_text.size()) {
+                std::string middle(result_text, prefix, result_text.size() - prefix - suffix);
+                buf_->separate_history();
+                buf_->replace(static_cast<int>(prefix), static_cast<int>(old_text.size() - suffix),
+                              middle.c_str());
+                buf_->separate_history();
+                wipe(middle);
+            }
         }
-        if (count == 0) fl_beep();
+        wipe(result_text);
+        set_status("Replaced " + std::to_string(count) + (count == 1 ? " occurrence" : " occurrences"));
     }
 
 public:
     FindReplaceWindow()
-        : Fl_Window(400, 155, "Find / Replace")
+        : Fl_Window(420, 184, "Find / Replace")
     {
         Fl_Box *fl = new Fl_Box(10, 10, 65, 24, "Find:");
         fl->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
-        find_inp_ = new Fl_Input(80, 10, 310, 24);
+        find_inp_ = new Fl_Input(80, 10, 330, 24);
 
         Fl_Box *rl = new Fl_Box(10, 42, 65, 24, "Replace:");
         rl->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
-        repl_inp_ = new Fl_Input(80, 42, 310, 24);
+        repl_inp_ = new Fl_Input(80, 42, 330, 24);
 
-        case_btn_ = new Fl_Check_Button(10, 74, 130, 24, "Match case");
+        case_btn_  = new Fl_Check_Button(10, 74, 120, 24, "Match case");
+        regex_btn_ = new Fl_Check_Button(140, 74, 180, 24, "Regular expression");
+        regex_btn_->tooltip(
+            "Extended regular expressions: . * + ? | ( ) [ ] { } \\d \\w \\s \\b ^ $\n"
+            "'^' and '$' match at every line; '.' does not match a line break.\n"
+            "Replace with: \\1..\\9 = groups, \\0 = whole match, \\n = new line, \\t = tab.");
 
-        Fl_Return_Button *fn = new Fl_Return_Button(10,  118,  80, 26, "Find");
-        Fl_Button        *rp = new Fl_Button(100,  118,  80, 26, "Replace");
-        Fl_Button        *ra = new Fl_Button(190,  118, 110, 26, "Replace All");
-        Fl_Button        *cl = new Fl_Button(330,  118,  60, 26, "Close");
+        status_ = new Fl_Box(10, 102, 400, 18);
+        status_->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+        status_->labelsize(12);
+
+        Fl_Return_Button *fn = new Fl_Return_Button(10,  130,  80, 26, "Find");
+        Fl_Button        *rp = new Fl_Button(100,  130,  80, 26, "Replace");
+        Fl_Button        *ra = new Fl_Button(190,  130, 110, 26, "Replace All");
+        Fl_Button        *cl = new Fl_Button(350,  130,  60, 26, "Close");
 
         fn->callback(find_cb,     this);
         rp->callback(repl_cb,     this);
@@ -903,7 +1008,7 @@ public:
         set_non_modal();
     }
 
-    void attach(Fl_Text_Editor *ed, Fl_Text_Buffer *buf)
+    void attach(Fl_Text_Editor *ed, EditorTextBuffer *buf)
     {
         editor_ = ed;
         buf_    = buf;

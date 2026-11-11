@@ -44,10 +44,11 @@ application logic of its own beyond UI interaction.
 |---|---|---|---|
 | FLTK 1.5 | `external/fltk/1_5/` | FLTK (LGPL + exceptions) | GUI |
 | Monocypher 4.0.3 | `external/sources/monocypher-4.0.3/` | BSD 2-Clause / CC0 | Crypto and KDF |
+| TRE 0.9.0 | `external/sources/tre-0.9.0/` | BSD 2-Clause | Regular-expression find/replace |
 | microz | `lib/microz/` | MIT (miniz-derived) | DEFLATE compression |
 | FTXUI 7.0.3 | `external/sources/ftxui-7.0.3/` (downloaded if missing) | MIT | Terminal UI (`etui`) |
 
-FLTK and Monocypher are pristine upstream code and are not committed to this repository —
+FLTK, Monocypher and TRE are pristine upstream code and are not committed to this repository —
 see the top-level `README.md` for how to obtain them.
 
 ## TXX File Format
@@ -83,13 +84,13 @@ Open detects the source encoding automatically and transcodes to UTF-8. Supporte
 
 | Action | Shortcut | Notes |
 |---|---|---|
-| Undo | `Ctrl+Z` | |
-| Redo | `Ctrl+Y` | |
+| Undo | `Ctrl+Z` | Disabled when there is nothing to undo |
+| Redo | `Ctrl+Y` | Disabled when there is nothing to redo |
 | Cut | `Ctrl+X` | Disabled when no selection |
 | Copy | `Ctrl+C` | Disabled when no selection |
 | Paste | `Ctrl+V` | Disabled when clipboard has no text |
 | Select All | `Ctrl+A` | Disabled on empty document |
-| Find… | `Ctrl+F` | Opens the Find & Replace panel |
+| Find… | `Ctrl+F` | Opens the Find & Replace panel (plain text or regular expression) |
 | Go to Line… | `Ctrl+G` | Modal dialog; type a line number and press Enter or OK |
 | Text / Convert Tabs to Spaces | | |
 | Text / Convert Leading Spaces to Tabs | | |
@@ -143,6 +144,7 @@ external/             — downloaded compilation dependencies (gitignored)
   fltk/1_5/          — FLTK 1.5 sources and platform installations
   sources/           — versioned upstream sources (gitignored)
     monocypher-4.0.3/ — crypto library
+    tre-0.9.0/        — regular-expression library
     ftxui-7.0.3/      — terminal UI library
 lib/
   fltk/              — MinGW toolchain files

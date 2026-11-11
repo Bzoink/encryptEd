@@ -15,6 +15,9 @@
 #ifndef ENCRYPTED_MONOCYPHER_VERSION
 #define ENCRYPTED_MONOCYPHER_VERSION "Unknown"
 #endif
+#ifndef ENCRYPTED_TRE_VERSION
+#define ENCRYPTED_TRE_VERSION "Unknown"
+#endif
 #ifndef ENCRYPTED_FTXUI_VERSION
 #define ENCRYPTED_FTXUI_VERSION "Unknown"
 #endif
@@ -27,6 +30,7 @@ inline std::string about_text(const std::string &program, const std::string &ui_
         "\n\nDependencies:\n" + ui_dependency +
         "\nLua " ENCRYPTED_LUA_VERSION " - MIT (plugin runtime)"
         "\nMonocypher " ENCRYPTED_MONOCYPHER_VERSION " - BSD-2-Clause / CC0 (cryptography)"
+        "\nTRE " ENCRYPTED_TRE_VERSION " - BSD-2-Clause (regular expressions)"
         "\nmicroz 1.0 - MIT (compression)"
         "\n\nCompression: raw DEFLATE"
         "\nEncryption: XChaCha20-Poly1305"

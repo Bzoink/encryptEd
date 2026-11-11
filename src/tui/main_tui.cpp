@@ -41,6 +41,7 @@ extern "C" {
 }
 
 #include "app/about.h"
+#include "search/search.h"
 #include "app/size_format.h"
 #include "gui/text_transform.h"
 #include "tui/clipboard.h"
@@ -229,10 +230,18 @@ public:
         return base;
     }
 
-    bool selection_equals(const std::string &query) {
-        std::string selection = buffer_.selected_text();
-        StringWiper wiper{selection};
-        return buffer_.has_selection() && selection == query;
+    // True when the current selection is itself a match of the search text
+    // (with the current regex / case options).
+    bool selection_matches() {
+        if (last_find_.empty() || !buffer_.has_selection()) return false;
+        search::Query query;
+        if (!query.compile(last_find_, search_options())) return false;
+        std::string document = buffer_.text();
+        StringWiper document_wiper{document};
+        search::Match match;
+        return query.match_exact(document, buffer_.byte_position(buffer_.selection_start()),
+                                 buffer_.byte_position(buffer_.selection_end()), match)
+               == search::Result::Found;
     }
 
     bool OnEvent(Event event) override {
@@ -240,11 +249,11 @@ public:
         if (search_panel_open_) {
             if (event == Event::Escape) { search_panel_open_ = false; return true; }
             if (event == Event::F3 || event.input() == "\x1b[13~") {
-                find_match(last_find_, false, selection_equals(last_find_));
+                find_match(false, selection_matches());
                 return true;
             }
             if (event == Event::F2 || event.input() == "\x1b[12~") {
-                find_match(last_find_, true, true);
+                find_match(true, true);
                 return true;
             }
             search_panel_->OnEvent(event);
@@ -2059,10 +2068,11 @@ private:
                         wipe_string(sys);
                         if (clipboard_.empty()) return;
                         edit([&]{ buffer_.insert_text(clipboard_); }); }
-    void cmd_find()   { show_prompt("Find", false, last_find_, [this](bool ok, std::string q){
+    void cmd_find()   { show_prompt(search_regex_ ? "Find (regex)" : "Find", false, last_find_,
+                                    [this](bool ok, std::string q){
                             StringWiper q_wiper{q};
                             if (!ok || q.empty()) return;
-                            last_find_ = q; find_match(q, false, false); }); }
+                            last_find_ = q; find_match(false, false); }); }
     void cmd_goto()   { show_prompt("Go to Line", false, "", [this](bool ok, std::string v){
                             if (!ok) return;
                             try { buffer_.goto_line(std::stoi(v)); } catch (...){} }); }
@@ -2084,90 +2094,124 @@ private:
         });
     }
 
-    bool find_match(const std::string &query, bool previous, bool advance) {
-        if (query.empty()) { set_status("Enter search text"); return false; }
+    search::Options search_options() const {
+        search::Options options;
+        options.regex = search_regex_;
+        options.match_case = search_case_;
+        return options;
+    }
+
+    // Compile the search text with the current options; problems go to the
+    // status line. Messages never contain the search text: it is often the most
+    // sensitive string in an encrypted document, and the status line ends up in
+    // the terminal scrollback buffer.
+    bool prepare_query(search::Query &query) {
+        if (last_find_.empty()) { set_status("Enter search text"); return false; }
+        if (!query.compile(last_find_, search_options())) { set_status(query.error()); return false; }
+        return true;
+    }
+
+    bool find_match(bool previous, bool advance) {
+        search::Query query;
+        if (!prepare_query(query)) return false;
         std::string document = buffer_.text();
         StringWiper document_wiper{document};
-        std::string selection = buffer_.selected_text();
-        StringWiper selection_wiper{selection};
         std::size_t offset = buffer_.byte_position(buffer_.cursor());
-        if (advance && buffer_.has_selection() && selection == query)
-            offset = buffer_.byte_position(previous ? buffer_.selection_start() : buffer_.selection_end());
-        else if (advance && !previous && offset < document.size())
-            ++offset;
-        std::size_t found = std::string::npos;
-        bool wrapped = false;
-        if (previous) {
-            if (offset > 0) found = document.rfind(query, offset - 1);
-            if (found == std::string::npos) { found = document.rfind(query); wrapped = true; }
-        } else {
-            found = document.find(query, offset);
-            if (found == std::string::npos) { found = document.find(query); wrapped = true; }
+        if (advance) {
+            bool moved = false;
+            if (buffer_.has_selection()) {
+                const std::size_t first = buffer_.byte_position(buffer_.selection_start());
+                const std::size_t last = buffer_.byte_position(buffer_.selection_end());
+                search::Match exact;
+                if (query.match_exact(document, first, last, exact) == search::Result::Found) {
+                    offset = previous ? first : last;
+                    moved = true;
+                }
+            }
+            if (!moved && !previous && offset < document.size()) ++offset;
         }
-        if (found == std::string::npos) {
+        search::Match match;
+        bool wrapped = false;
+        search::Result result;
+        if (previous) {
+            result = query.find_prev(document, offset, match);
+            if (result == search::Result::NotFound) {
+                result = query.find_prev(document, document.size(), match);
+                wrapped = true;
+            }
+        } else {
+            result = query.find_next(document, offset, match);
+            if (result == search::Result::NotFound) {
+                result = query.find_next(document, 0, match);
+                wrapped = true;
+            }
+        }
+        if (result == search::Result::Error) { set_status(query.error()); return false; }
+        if (result == search::Result::NotFound) {
             buffer_.clear_selection();
-            // Do not echo the query: search terms are often the most sensitive
-            // strings in an encrypted document, and the status line ends up in
-            // the terminal scrollback buffer.
             set_status("Not found");
             return false;
         }
-        const Position first = buffer_.position_from_byte(found);
+        const Position first = buffer_.position_from_byte(match.whole.start);
         buffer_.set_cursor(first);
-        buffer_.set_selection(first, buffer_.position_from_byte(found + query.size()));
+        buffer_.set_selection(first, buffer_.position_from_byte(match.whole.end));
         set_status(wrapped ? "Found (wrapped)" : "Found");
         return true;
     }
 
     void repeat_find(bool previous) {
         if (last_find_.empty()) { cmd_find(); return; }
-        find_match(last_find_, previous, true);
+        find_match(previous, true);
     }
 
     void replace_match() {
-        if (last_find_.empty()) { set_status("Enter search text"); return; }
-        std::string selection = buffer_.selected_text();
-        StringWiper selection_wiper{selection};
-        if (!buffer_.has_selection() || selection != last_find_) {
-            find_match(last_find_, false, false);
+        search::Query query;
+        if (!prepare_query(query)) return;
+        if (!query.check_replacement(last_replace_)) { set_status(query.error()); return; }
+        std::string document = buffer_.text();
+        StringWiper document_wiper{document};
+        std::string expanded;
+        StringWiper expanded_wiper{expanded};
+        bool matches = false;
+        if (buffer_.has_selection()) {
+            search::Match match;
+            if (query.match_exact(document, buffer_.byte_position(buffer_.selection_start()),
+                                  buffer_.byte_position(buffer_.selection_end()), match)
+                == search::Result::Found) {
+                query.expand(document, match, last_replace_, expanded);
+                matches = true;
+            }
+        }
+        if (!matches) {
+            find_match(false, false);
             return; // First select a matching occurrence; never replace unrelated text.
         }
-        if (last_find_ != last_replace_) {
-            if (last_replace_.empty()) buffer_.delete_selection();
-            else buffer_.insert_text(last_replace_);
+        std::string selection = buffer_.selected_text();
+        StringWiper selection_wiper{selection};
+        const bool unchanged = selection == expanded;
+        if (!unchanged) {
+            if (expanded.empty()) buffer_.delete_selection();
+            else buffer_.insert_text(expanded);
             dirty_ = true;
         }
-        // insert_text leaves the cursor after the replacement. Include that
-        // position so adjacent occurrences are not skipped.
-        find_match(last_find_, false, last_find_ == last_replace_);
+        // insert_text leaves the cursor after the replacement, so adjacent
+        // occurrences are found next. An identical replacement leaves the
+        // selection in place, so step past it.
+        find_match(false, unchanged);
     }
 
     void replace_all_matches() {
-        if (last_find_.empty()) { set_status("Enter search text"); return; }
+        search::Query query;
+        if (!prepare_query(query)) return;
+        if (!query.check_replacement(last_replace_)) { set_status(query.error()); return; }
         std::string document = buffer_.text();
         StringWiper document_wiper{document};
         std::string result;
         StringWiper result_wiper{result};
-        // Pre-size the result so append() never reallocates: a grown-away
-        // std::string buffer would leave plaintext in freed heap.
-        std::size_t occurrences = 0;
-        for (std::size_t pos = 0; (pos = document.find(last_find_, pos)) != std::string::npos;
-             pos += last_find_.size())
-            ++occurrences;
-        const std::size_t growth = last_replace_.size() > last_find_.size()
-            ? (last_replace_.size() - last_find_.size()) * occurrences
-            : 0;
-        result.reserve(document.size() + growth);
-        std::size_t position = 0, count = 0;
-        while (true) {
-            const auto found = document.find(last_find_, position);
-            if (found == std::string::npos) { result.append(document, position, std::string::npos); break; }
-            result.append(document, position, found - position);
-            result += last_replace_;
-            position = found + last_find_.size();
-            ++count;
-        }
-        if (!count) { set_status("Not found"); return; }
+        std::size_t count = 0;
+        const search::Result outcome = query.replace_all(document, last_replace_, result, count);
+        if (outcome == search::Result::Error) { set_status(query.error()); return; }
+        if (outcome == search::Result::NotFound) { set_status("Not found"); return; }
         const auto cursor = buffer_.byte_position(buffer_.cursor());
         if (buffer_.replace_text(result)) {
             dirty_ = true;
@@ -2180,7 +2224,7 @@ private:
     void cmd_replace() {
         search_panel_open_ = true;
         auto next_action = [this] {
-            find_match(last_find_, false, selection_equals(last_find_));
+            find_match(false, selection_matches());
         };
         auto input_options = InputOption::Default();
         input_options.multiline = false;
@@ -2188,21 +2232,26 @@ private:
         auto query = Input(&last_find_, "Search text", input_options);
         auto replacement = Input(&last_replace_, "Replacement (empty deletes)", input_options);
         auto next = Button("Find Next", next_action, ButtonOption::Simple());
-        auto previous = Button("Find Previous", [this]{ find_match(last_find_, true, true); }, ButtonOption::Simple());
+        auto previous = Button("Find Previous", [this]{ find_match(true, true); }, ButtonOption::Simple());
         auto replace = Button("Replace", [this]{ replace_match(); }, ButtonOption::Simple());
         auto all = Button("Replace All", [this]{ replace_all_matches(); }, ButtonOption::Simple());
         auto close = Button("Close", [this]{ search_panel_open_ = false; }, ButtonOption::Simple());
+        auto regex_box = Checkbox("Regular expression", &search_regex_);
+        auto case_box = Checkbox("Match case", &search_case_);
+        auto options = Container::Horizontal({regex_box, case_box});
         auto navigation = Container::Horizontal({next, previous});
         auto actions = Container::Horizontal({replace, all, close});
-        auto container = Container::Vertical({query, replacement, navigation, actions});
+        auto container = Container::Vertical({query, replacement, options, navigation, actions});
         query->TakeFocus();
-        search_panel_ = Renderer(container, [this, query, replacement, navigation, actions] {
+        search_panel_ = Renderer(container, [this, query, replacement, options, navigation, actions] {
             return chrome_style(window(text(" Find / Replace "), vbox({
                 hbox({text("Find:         "), query->Render() | flex}),
                 hbox({text("Replace with: "), replacement->Render() | flex}),
+                options->Render(),
                 separator(), navigation->Render(), actions->Render(), separator(),
                 paragraph(status_msg_) | size(HEIGHT, LESS_THAN, 2),
-                text("Case-sensitive literal search; searches wrap"),
+                text(search_regex_ ? "Regex: \\1-\\9 groups, \\n newline, ^ $ per line; wraps"
+                                   : "Literal text search; searches wrap"),
                 text("F3: next  F2: previous  Tab: controls  Esc: close") | dim
             })) | clear_under | size(WIDTH, LESS_THAN, std::min(76, Terminal::Size().dimx - 2)) | center);
         });
@@ -2333,6 +2382,8 @@ private:
     std::string        pending_open_;
     std::string        clipboard_;
     std::string        last_find_;
+    bool               search_regex_ = false;   // regular expression instead of literal text
+    bool               search_case_ = true;     // match case
     std::string        last_replace_;
     bool search_panel_open_ = false;
     Component search_panel_;

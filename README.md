@@ -130,6 +130,12 @@ files remain in `lib/fltk/`.
   XChaCha20-Poly1305. **Not** committed — download it from
   https://monocypher.org/download/ and extract it there; CMake uses its `src/`
   directory. CMake fails with instructions if it's missing.
+- `external/sources/tre-0.9.0`: TRE 0.9.0 (BSD 2-clause) for regular-expression find and
+  replace. **Not** committed — download `tre-0.9.0.tar.gz` from
+  https://github.com/laurikari/tre/releases/tag/v0.9.0 (SHA-256
+  `f57f5698cafdfe516d11fb0b71705916fe1162f14b08cf69d7cf86923b5a2477`) and extract it
+  there; CMake uses its `lib/` and `local_includes/` directories unmodified and fails
+  with instructions if it's missing.
 - FLTK 1.5 (GUI only): **not** committed — build it as a static library and place it at
   `external/fltk/1_5/fltk-linux/` (or `fltk-win64/`/`fltk-win32/` for Windows cross-builds); see
   https://www.fltk.org/software.php. Without it, CMake skips the `encryptEd` GUI target but
@@ -144,8 +150,28 @@ files remain in `lib/fltk/`.
 Use **Ctrl+F** to find text, **F3** for the next match, and **F2** for the previous
 match. Searches wrap at either end of the document. **Ctrl+R** or Edit's
 **Find / Replace** command opens search and replace with mouse-accessible controls.
-In etui, searches are literal and case-sensitive; an empty replacement deletes
-matches, and Replace All is one undo action (Alt+Z; redo Ctrl+Y/Alt+Y).
+An empty replacement deletes matches, and Replace All is one undo action (GUI Ctrl+Z;
+etui Alt+Z, redo Ctrl+Y/Alt+Y).
+
+Both editors share one search engine with two modes, chosen by checkboxes in the
+Find / Replace window:
+
+- **Plain text** (default): the search text is literal. **Match case** is optional
+  (GUI: off by default; etui: on by default).
+- **Regular expression**: extended regular expressions (TRE) with `.` `*` `+` `?` `|`
+  `( )` `[ ]` `{n,m}`, lazy `*?`, `\d \w \s \b \< \>` and POSIX classes such as
+  `[[:alpha:]]`. `^` and `$` match at every line and `.` does not match a line break
+  (use `\n`). In the replacement, `\1`–`\9` insert capture groups, `\0` the whole
+  match, `\n` a new line, `\t` a tab and `\\` a backslash. Replacement text is literal
+  in plain mode.
+
+Replace All with a pattern such as `^` or `$` applies to every line. Find skips
+zero-length matches. Back-references and approximate matching are refused, and
+patterns that are too large or complex, or documents over 32 MB, report an error
+instead of freezing the editor. Matching is linear-time, so a pattern like `(a*)*b`
+cannot hang. Error messages never repeat the search text. On Windows, characters
+outside the Basic Multilingual Plane (such as emoji) count as two characters for
+`.` and classes.
 
 The status counter supports **Character count**, **Byte count**, and **Readable size**.
 Choose the mode in Settings (GUI: Preferences). Readable size shows UTF-8 document
@@ -193,5 +219,5 @@ with Page Up/Page Down retained. Click text fields to place the cursor.
 ## License
 
 GPLv3 — see [LICENSE](LICENSE). Vendored dependencies keep their own licenses (Monocypher:
-BSD-2-clause/CC0 dual license; microz/miniz: MIT; FLTK: LGPL with the static-linking
-exception).
+BSD-2-clause/CC0 dual license; microz/miniz: MIT; TRE: BSD-2-clause; FLTK: LGPL with the
+static-linking exception).

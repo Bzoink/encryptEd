@@ -60,6 +60,7 @@ function(encrypted_apply_app_metadata target)
         ENCRYPTED_APP_VERSION="${ENCRYPTED_APP_VERSION}"
         ENCRYPTED_LUA_VERSION="${ENCRYPTED_LUA_VERSION}"
         ENCRYPTED_MONOCYPHER_VERSION="${ENCRYPTED_MONOCYPHER_VERSION}"
+        ENCRYPTED_TRE_VERSION="${ENCRYPTED_TRE_VERSION}"
     )
 endfunction()
 
@@ -118,6 +119,57 @@ add_library(monocypher STATIC
 target_include_directories(monocypher PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/external/sources/monocypher-4.0.3/src
 )
+
+# Regular expressions for find/replace: TRE (BSD 2-clause), unmodified upstream
+# sources. Its heap use is routed through a wiping, size-capped allocator
+# (src/search/tre_alloc.c) by force-including src/search/tre_force.h.
+set(ENCRYPTED_TRE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/sources/tre-0.9.0")
+encrypted_require_vendored_path(
+    "${ENCRYPTED_TRE_DIR}/lib/tre-compile.c"
+    "TRE"
+    "  Download TRE 0.9.0 (tre-0.9.0.tar.gz) from\n    https://github.com/laurikari/tre/releases/tag/v0.9.0 and extract it into\n    external/sources/tre-0.9.0/ (the lib/ and local_includes/ directories are used)."
+)
+file(STRINGS "${ENCRYPTED_TRE_DIR}/local_includes/tre-config.h" _tre_version_line
+    LIMIT_COUNT 1 REGEX "^#define TRE_VERSION ")
+string(REGEX REPLACE "^#define TRE_VERSION \"([^\"]*)\".*$" "\\1" ENCRYPTED_TRE_VERSION "${_tre_version_line}")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${ENCRYPTED_TRE_DIR}/local_includes/tre-config.h")
+
+set(ENCRYPTED_TRE_SOURCES
+    regcomp.c regerror.c regexec.c tre-ast.c tre-compile.c tre-match-approx.c
+    tre-match-backtrack.c tre-match-parallel.c tre-mem.c tre-parse.c tre-stack.c
+)
+list(TRANSFORM ENCRYPTED_TRE_SOURCES PREPEND "${ENCRYPTED_TRE_DIR}/lib/")
+set(ENCRYPTED_TRE_GLUE_SOURCES src/search/tre_glue.c)
+add_library(tre STATIC
+    ${ENCRYPTED_TRE_SOURCES}
+    ${ENCRYPTED_TRE_GLUE_SOURCES}
+    src/search/tre_alloc.c
+)
+if(WIN32)
+    target_sources(tre PRIVATE src/search/tre_wctype_win.c)
+endif()
+set_source_files_properties(${ENCRYPTED_TRE_SOURCES} ${ENCRYPTED_TRE_GLUE_SOURCES}
+    PROPERTIES COMPILE_OPTIONS "-include;${CMAKE_CURRENT_SOURCE_DIR}/src/search/tre_force.h")
+target_include_directories(tre
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/search/tre_config   # config.h
+        ${ENCRYPTED_TRE_DIR}/lib
+    PUBLIC
+        ${ENCRYPTED_TRE_DIR}/local_includes                 # tre.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_definitions(tre PRIVATE HAVE_CONFIG_H)
+target_link_libraries(tre PUBLIC encrypted_core)
+encrypted_apply_hardening(tre)
+if(NOT MSVC)
+    target_compile_options(tre PRIVATE -w)   # third-party code: no warning noise
+endif()
+
+add_library(encrypted_search STATIC src/search/search.cpp)
+target_include_directories(encrypted_search PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(encrypted_search PUBLIC tre encrypted_core)
+encrypted_apply_hardening(encrypted_search)
 
 add_library(encrypted_core STATIC
     src/core/txx_buffer.c
@@ -259,6 +311,7 @@ if(WIN32 AND CMAKE_CROSSCOMPILING)
         target_link_libraries(encryptEd PRIVATE
             encrypted_core
             encrypted_highlight
+            encrypted_search
             encrypted_text_transform
             encrypted_plugins
             fltk::fltk
@@ -368,13 +421,13 @@ if(TARGET fltk::fltk OR FLTK_CONFIG)
     )
     if(TARGET fltk::fltk)
         # CMake target: library order is handled automatically (works with static libs too).
-        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_highlight encrypted_text_transform encrypted_plugins fltk::fltk)
+        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_highlight encrypted_search encrypted_text_transform encrypted_plugins fltk::fltk)
     else()
         # Raw fltk-config flags: target_link_options places them before object files,
         # which is fine for shared libraries (system install).
         target_compile_options(encryptEd PRIVATE ${_fltk_cxx_list})
         target_link_options(encryptEd   PRIVATE ${_fltk_ld_list})
-        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_highlight encrypted_text_transform encrypted_plugins)
+        target_link_libraries(encryptEd PRIVATE encrypted_core encrypted_highlight encrypted_search encrypted_text_transform encrypted_plugins)
     endif()
     target_include_directories(encryptEd PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -494,6 +547,7 @@ if(ENCRYPTED_BUILD_TUI)
         target_include_directories(etui PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
         target_link_libraries(etui PRIVATE
             etui_core
+            encrypted_search
             encrypted_text_transform
             encrypted_plugins
             ftxui::screen
@@ -567,6 +621,13 @@ add_executable(crash_report_tests tests/crash_report_tests.c)
 target_link_libraries(crash_report_tests PRIVATE encrypted_core)
 add_test(NAME crash_report_tests COMMAND crash_report_tests)
 set_tests_properties(crash_report_tests PROPERTIES TIMEOUT 30)
+
+add_executable(search_tests tests/search_tests.cpp)
+target_link_libraries(search_tests PRIVATE encrypted_search)
+encrypted_make_windows_self_contained(search_tests -static-libstdc++)
+encrypted_apply_hardening(search_tests)
+add_test(NAME search_tests COMMAND search_tests)
+set_tests_properties(search_tests PROPERTIES TIMEOUT 120)
 
 add_executable(plugin_tests tests/plugin_tests.cpp)
 target_link_libraries(plugin_tests PRIVATE encrypted_plugins)
@@ -712,6 +773,10 @@ if(TARGET etui AND UNIX AND NOT CMAKE_CROSSCOMPILING)
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/search_smoke.py
                 $<TARGET_FILE:etui>)
         set_tests_properties(tui_search_smoke PROPERTIES TIMEOUT 120)
+        add_test(NAME tui_regex_search_smoke
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/regex_search_smoke.py
+                $<TARGET_FILE:etui>)
+        set_tests_properties(tui_regex_search_smoke PROPERTIES TIMEOUT 120)
         add_test(NAME tui_hscroll_smoke
             COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/tui/hscroll_smoke.py
                 $<TARGET_FILE:etui>)
