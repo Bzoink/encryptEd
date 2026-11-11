@@ -3556,7 +3556,25 @@ public:
         apply_settings();
     }
 
-    void open_initial_path(const std::string &path) { do_open_path(path); }
+    // Command-line path: open it, or start an empty document bound to the name
+    // when the file does not exist yet (created on the first save; a .txx name
+    // asks for a password then).
+    void open_initial_path(const std::string &path)
+    {
+        std::error_code ec;
+        const auto st = std::filesystem::status(std::filesystem::u8path(path), ec);
+        if (st.type() != std::filesystem::file_type::not_found) {
+            do_open_path(path);
+            return;
+        }
+        load_text("");
+        password_.clear();
+        reset_text_state();
+        filepath_ = path;
+        is_txx_   = has_txx_extension(path);
+        set_dirty(false);
+        apply_highlight_settings();
+    }
     void open_dropped_file(const std::string &path)  { if (!plugin_running_) do_open_path(path); }
 
     void resize(int x, int y, int w, int h) override

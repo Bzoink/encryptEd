@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `etui <path>` and `encryptEd <path>` now start a new empty document when the file
+  does not exist, instead of showing an open error; the file is created on the first save.
+
 ## 1.4 — 2026-11-11
 
 ### Search

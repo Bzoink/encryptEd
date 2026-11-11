@@ -92,6 +92,10 @@ git show HEAD:README.md | etui
 The keyboard keeps coming from the terminal. The document has no path, so **Save**
 opens the Save As dialog; a path argument takes precedence over stdin.
 
+`etui newfile.txt` with a path that does not exist yet starts an empty document bound
+to that name; the file is created on the first **Save** (a `.txx` name asks for a
+password then).
+
 Long lines scroll horizontally instead of wrapping: the view follows the cursor,
 **Home**/**End** jump to either end of the line, and horizontal wheel events shift
 it a few columns. A position bar appears in the status line while a visible line is

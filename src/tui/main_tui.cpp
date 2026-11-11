@@ -167,7 +167,20 @@ public:
             syn_lang_ = SynLang::None;
             set_status("Read " + std::to_string(piped_text.size()) + " bytes from stdin (unsaved)");
         } else if (!pending_open_.empty()) {
-            open_path_flow(pending_open_);
+            std::error_code ec;
+            std::filesystem::file_status st = std::filesystem::status(pending_open_, ec);
+            if (st.type() == std::filesystem::file_type::not_found) {
+                // `etui newfile.txt`: start an empty document bound to that
+                // path. Nothing is written until the first save; a .txx name
+                // asks for a password then.
+                filepath_ = pending_open_;
+                encrypted_ = has_txx_extension(filepath_);
+                dirty_ = false;
+                syn_lang_ = syn_detect(filepath_);
+                set_status("New file " + base_name(filepath_));
+            } else {
+                open_path_flow(pending_open_);
+            }
         }
     }
 
