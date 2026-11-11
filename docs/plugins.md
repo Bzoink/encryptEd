@@ -78,7 +78,7 @@ canceling any dialog discards the run.
 | Command | Behavior |
 | --- | --- |
 | Text → Add prefix and suffix | Choose each line or the exact block, then enter literal, single-line prefix and suffix strings. Blank lines are included; `%` is literal. |
-| HTML → Compact HTML | Remove whitespace-only gaps between tags, including inline tags. Confirm first: `<span>Hello</span> <span>world</span>` becomes `<span>Hello</span><span>world</span>` and may render as joined words. |
+| HTML → Compact HTML | Collapse each whitespace-only gap between tags (spaces, tabs, line breaks) to a single space, including between inline tags: `<span>Hello</span> \n <span>world</span>` becomes `<span>Hello</span> <span>world</span>`. Gaps that are already one space, and tags with no gap, are unchanged. Confirm first. |
 | HTML → Escape HTML | Choose text or attribute-value escaping. Escape `&`, `<`, `>`; attribute mode also escapes both quote characters. Existing entities are escaped again (`&amp;` → `&amp;amp;`). |
 | HTML → Wrap in tag | Enter a tag name, such as `div` or `my-tag`. Wrap the exact scope without added whitespace. Attributes and void tags such as `img` are rejected. |
 | Lines → Sort lines | Ascending or descending, case-sensitive byte ordering. Includes blank lines and retains duplicates; this is not locale-aware sorting. |
@@ -93,7 +93,7 @@ canceling any dialog discards the run.
 Compact HTML uses a quote-aware scan of the complete document, so selections
 inside `pre`, `textarea`, `script`, and `style` remain protected. Comments, attribute
 values, and ordinary text are preserved. Only eligible whitespace gaps entirely
-inside the selected scope are removed. Unterminated tags, quotes, comments, or
+inside the selected scope are collapsed. Unterminated tags, quotes, comments, or
 protected elements cause an error without edits. This is whitespace processing,
 not a complete HTML parser or minifier.
 

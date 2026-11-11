@@ -1,5 +1,5 @@
 -- Scan the full document to retain protected-element context for selections.
-if not ui.confirm('Remove whitespace between HTML tags?\n\nThis also removes spaces between inline elements and may join rendered words.\nContents of pre, textarea, script, and style are preserved.') then
+if not ui.confirm('Collapse whitespace between HTML tags to a single space?\n\nSpaces, tabs, and line breaks between two tags become one space.\nContents of pre, textarea, script, and style are preserved.') then
     editor.cancel()
 end
 local document = editor.text()
@@ -36,8 +36,10 @@ while position <= #document do
         local name = token:match('^</?([a-z][a-z0-9:-]*)')
         if previous_end and pre_depth == 0 then
             local gap_start = previous_end + 1
+            local gap = document:sub(gap_start, start - 1)
+            -- A gap that is already exactly one space is left alone.
             if gap_start < start and gap_start >= first and start <= last
-                and document:sub(gap_start, start - 1):match('^%s+$') then
+                and gap ~= ' ' and gap:match('^%s+$') then
                 gaps[#gaps + 1] = {gap_start, start}
             end
         end
@@ -62,7 +64,7 @@ end
 if pre_depth > 0 then error('Unterminated protected HTML element: pre.') end
 local parts, cursor = {}, first
 for _, gap in ipairs(gaps) do
-    parts[#parts + 1] = document:sub(cursor, gap[1] - 1)
+    parts[#parts + 1] = document:sub(cursor, gap[1] - 1) .. ' '
     cursor = gap[2]
 end
 parts[#parts + 1] = document:sub(cursor, last - 1)

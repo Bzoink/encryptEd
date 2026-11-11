@@ -133,18 +133,20 @@ static void html_tests()
     for (const auto &tag : {"", "a class='x'", "1div", "a_b", "IMG", "br", "猫"}) invalid(wrap, "x", {tag});
 
     const std::string compact = "HTML/Compact HTML";
-    transform(compact, "<span>Hello</span> \n <span>world</span>", "<span>Hello</span><span>world</span>");
-    transform(compact, "<div title='a > b'> \t <b> 猫 </b> \n </div>", "<div title='a > b'><b> 猫 </b></div>");
-    transform(compact, "<div> text <b>x</b> </div>", "<div> text <b>x</b></div>");
+    transform(compact, "<span>Hello</span> \n <span>world</span>", "<span>Hello</span> <span>world</span>");
+    transform(compact, "<div title='a > b'> \t <b> 猫 </b> \n </div>", "<div title='a > b'> <b> 猫 </b> </div>");
+    transform(compact, "<div> text <b>x</b> </div>", "<div> text <b>x</b> </div>");
+    transform(compact, "<a></a>\n\n\t  <b></b>   <c></c>", "<a></a> <b></b> <c></c>");
+    transform(compact, "<a></a><b></b>", "<a></a><b></b>");
     transform(compact, "<a></a> <!-- <b>  </b> --> <c></c>", "<a></a> <!-- <b>  </b> --> <c></c>");
     for (const auto &tag : {"pre", "PRE", "textarea", "script", "style"}) {
         std::string protected_text = "<" + std::string(tag) + "><b> \n </b></" + tag + ">";
-        transform(compact, "<div> \n " + protected_text + " \n </div>", "<div>" + protected_text + "</div>");
+        transform(compact, "<div> \n " + protected_text + " \n </div>", "<div> " + protected_text + " </div>");
         transform(compact, protected_text, protected_text, 1, {}, std::string(tag).size() + 2, protected_text.size());
     }
-    transform(compact, "<pre><pre> \n </pre> \n </pre> \n <b>x</b>", "<pre><pre> \n </pre> \n </pre><b>x</b>");
-    transform(compact, "<script>if (a < b) x = '<div>  </div>';</script> \n <b>x</b>", "<script>if (a < b) x = '<div>  </div>';</script><b>x</b>");
-    transform(compact, "<a> \n </a> \n <b> \n </b>", "<a></a> \n <b> \n </b>", 1, {}, 0, 10);
+    transform(compact, "<pre><pre> \n </pre> \n </pre> \n <b>x</b>", "<pre><pre> \n </pre> \n </pre> <b>x</b>");
+    transform(compact, "<script>if (a < b) x = '<div>  </div>';</script> \n <b>x</b>", "<script>if (a < b) x = '<div>  </div>';</script> <b>x</b>");
+    transform(compact, "<a> \n </a> \n <b> \n </b>", "<a> </a> \n <b> \n </b>", 1, {}, 0, 10);
     transform(compact, "a < 5", "a < 5");
     transform(compact, "", "");
     for (const auto &bad : {"<div", "<div x='abc>", "<!-- missing", "<pre>abc", "<script>abc", "<textarea>abc", "<style>abc"}) invalid(compact, bad);
