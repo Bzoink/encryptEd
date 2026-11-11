@@ -4,6 +4,7 @@ import fcntl
 import os
 import pathlib
 import pty
+import re
 import select
 import struct
 import subprocess
@@ -11,6 +12,13 @@ import sys
 import tempfile
 import termios
 import time
+
+
+# The About dialog must report the project version, so read it from CMake
+# rather than hard-coding a release number.
+PROJECT_VERSION = re.search(
+    r'project\(encryptEd VERSION ([0-9.]+)',
+    (pathlib.Path(__file__).resolve().parents[2] / 'CMakeLists.txt').read_text()).group(1)
 
 
 class Terminal:
@@ -151,7 +159,7 @@ def main():
         try:
             terminal.send('\x1bh')
             terminal.send('\r')
-            for detail in ['About etui', 'etui - EncryptEd terminal editor', 'Version: 1.2',
+            for detail in ['About etui', 'etui - EncryptEd terminal editor', 'Version: ' + PROJECT_VERSION,
                            'Author: Tony Mattsson', 'GPLv3', 'FTXUI 7.0.3',
                            'Lua 5.5.1', 'Monocypher 4.0.3', 'microz 1.0']:
                 terminal.wait(detail)

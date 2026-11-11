@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.4 — 2026-11-11
 
 ### Search
 
