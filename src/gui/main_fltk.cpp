@@ -2380,17 +2380,22 @@ class EncryptEdWindow : public Fl_Double_Window {
 
     void update_cursor_pos()
     {
-        const int pos   = editor_->insert_position();
+        // This also runs from the buffer's modify callback, where the editor's
+        // cursor can still be past the end of the text (e.g. undo just removed
+        // it). Clamp, and size everything from what text_range() returned.
+        const int len   = buf_->length();
+        const int pos   = std::max(0, std::min(editor_->insert_position(), len));
         const int row   = buf_->count_lines(0, pos) + 1;
-        const int total = buf_->count_lines(0, buf_->length()) + 1;
+        const int total = buf_->count_lines(0, len) + 1;
         const int ls    = buf_->line_start(pos);
 
         int col = 1;
         if (pos > ls) {
             char *seg = buf_->text_range(ls, pos);
             if (seg) {
+                const std::size_t seg_len = std::strlen(seg);
                 const char *p   = seg;
-                const char *end = seg + (pos - ls);
+                const char *end = seg + seg_len;
                 while (p < end) {
                     int clen = 0;
                     fl_utf8decode(p, end, &clen);
@@ -2398,7 +2403,7 @@ class EncryptEdWindow : public Fl_Double_Window {
                     p += clen;
                     ++col;
                 }
-                secure_free_text(seg, static_cast<std::size_t>(pos - ls));
+                secure_free_text(seg, seg_len);
             }
         }
 
