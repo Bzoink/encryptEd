@@ -123,6 +123,34 @@ static void runtime_tests()
     limits.script_bytes = 2;
     CHECK(run("return", "script-size", d, ui, limits).status == Status::Error);
     CHECK(run("for i=1,101 do ui.message('Again') end", "dialogs-limit", d, ui).status == Status::Error);
+    // Hostile or buggy scripts must end in a reported error, never a crash.
+    {
+        Limits hostile;
+        hostile.execution_milliseconds = 1500;
+        hostile.memory_bytes = 16 * 1024 * 1024;
+        const char *scripts[] = {
+            "local function f(n) return 1 + f(n + 1) end f(1)",             // Lua stack depth
+            "local function f() return (string.gsub('a', 'a', f)) end f()", // C stack depth
+            "local t = {} for i = 1, 200 do t[i] = i end table.sort(t, function() return true end)",
+            "return table.unpack({}, 1, 1e8)",
+            "local s = string.rep('x', 1e9)",
+            "return string.rep('a', 100000):find(string.rep('a?', 1000) .. string.rep('a', 1000))",
+            "return string.pack('i17', 1)",
+            "return utf8.char(0x7FFFFFFF, 0x80000000)",
+            "table.move({}, 1, math.maxinteger, 2)",
+            "error({})", "error()", "error(string.rep('e', 1e6))",
+            "editor.replace(1e10, 1, 'x')", "editor.set_text('a\\0b')", "editor.set_text('\\255')",
+            "ui.choose('x', {})", "ui.input({})",
+            "local x x()", "return {} < {}", "return 1 // 0", "for i = 1, 2, 0 do end",
+            "::a:: goto a",
+        };
+        for (const char *script : scripts) {
+            auto r = run(script, "hostile", d, ui, hostile);
+            CHECK(r.status == Status::Error && !r.error.empty() && r.document.text.empty());
+        }
+        CHECK(run(std::string(100000, '('), "deep-parse", d, ui, hostile).status == Status::Error);
+        CHECK(run("local x = " + std::string(1000, '{') + std::string(1000, '}'), "deep-table", d, ui, hostile).status == Status::Error);
+    }
     Document empty;
     CHECK(run("assert(editor.line_count() == 1 and editor.line(1) == ''); editor.replace_selection('x')", "empty", empty, ui).document.text == "x");
 }

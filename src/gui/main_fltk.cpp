@@ -1870,7 +1870,22 @@ class EncryptEdWindow : public Fl_Double_Window {
         plugin_running_ = true;
         fr_win_->hide();
         deactivate();
-        auto result = plugins::run(source, "@" + command.path.filename().u8string(), document, dialogs);
+        // A host-side failure must never leave the window deactivated or take
+        // the editor down; report it like any other plugin error. (The result
+        // is returned by value so document text is not copied on success.)
+        auto result = [&]() -> plugins::Result {
+            try {
+                return plugins::run(source, "@" + command.path.filename().u8string(), document, dialogs);
+            } catch (const std::exception &e) {
+                plugins::Result failed;
+                failed.error = e.what();
+                return failed;
+            } catch (...) {
+                plugins::Result failed;
+                failed.error = "Plugin failed unexpectedly.";
+                return failed;
+            }
+        }();
         activate();
         plugin_running_ = false;
         if (result.status == plugins::Status::Success) {

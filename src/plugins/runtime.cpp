@@ -392,6 +392,7 @@ Result run(const std::string &source, const std::string &name, const Document &d
                                    : "Plugin failed with a non-string error.";
         }
     } catch (const std::exception &e) { result.error = e.what(); }
+    catch (...) { result.error = "Plugin failed unexpectedly."; }
     if (L) lua_close(L);
     return result;
 }
