@@ -2370,6 +2370,17 @@ class EncryptEdWindow : public Fl_Double_Window {
         set_item_enabled(menu_->find_item("File/Open Containing Folder"), has_file);
         set_item_enabled(menu_->find_item("File/Save"),                   dirty_ || filepath_.empty());
 
+        // Gray out Undo/Redo when there is nothing to undo or redo.
+        const bool can_undo = buf_ != nullptr && buf_->can_undo();
+        const bool can_redo = buf_ != nullptr && buf_->can_redo();
+        set_item_enabled(menu_->find_item("Edit/Undo"), can_undo);
+        // Redo is listed twice (Ctrl+Shift+Z and Ctrl+Y); update every entry.
+        for (int i = menu_->find_index("Edit/Redo");
+             i >= 0 && i < menu_->size() && menu_->text(i) != nullptr &&
+             std::strcmp(menu_->text(i), "Redo") == 0;
+             ++i)
+            set_item_enabled(&menu_->menu()[i], can_redo);
+
         const bool has_sel = buf_ != nullptr && buf_->selected();
         set_item_enabled(menu_->find_item("Edit/Cut"),  has_sel);
         set_item_enabled(menu_->find_item("Edit/Copy"), has_sel);
