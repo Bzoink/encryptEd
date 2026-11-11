@@ -515,6 +515,8 @@ if(ENCRYPTED_BUILD_TUI)
     if(NOT ftxui_FOUND)
         include(FetchContent)
         set(FTXUI_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        # FTXUI is linked statically; its own headers/libs must not end up in our packages.
+        set(FTXUI_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
         set(FTXUI_BUILD_DOCS OFF CACHE BOOL "" FORCE)
         set(FTXUI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/sources/ftxui-7.0.3/CMakeLists.txt")
@@ -693,6 +695,8 @@ install(FILES docs/plugins.md DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/encryptEd
     COMPONENT ${ENCRYPTED_INSTALL_COMPONENT_GUI})
 install(FILES lib/lua/LICENSE DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/encryptEd/licenses
     RENAME Lua.txt COMPONENT ${ENCRYPTED_INSTALL_COMPONENT_GUI})
+install(FILES ${ENCRYPTED_TRE_DIR}/LICENSE DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/encryptEd/licenses
+    RENAME TRE.txt COMPONENT ${ENCRYPTED_INSTALL_COMPONENT_GUI})
 
 add_executable(encrypted_core_tests
     tests/core_tests.c
