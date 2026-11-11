@@ -35,6 +35,7 @@ extern "C" {
 #include "core/txx_codec.h"
 #include "core/txx_status.h"
 #include "core/utf8.h"
+#include "platform/crash_report.h"
 #include "platform/file_io.h"
 #include "platform/secure_mem.h"
 }
@@ -2379,6 +2380,14 @@ private:
 };
 
 int main(int argc, char **argv) {
+    // Report fatal crashes without recording any document material.
+    txx_crash_report_install("encryptEd", ENCRYPTED_APP_VERSION);
+    {
+        char report[2048];
+        if (txx_crash_report_take_previous(report, sizeof report) > 0)
+            std::fprintf(stderr, "encryptEd closed unexpectedly last time. Report:\n%s\n(saved in %s)\n",
+                         report, txx_crash_report_path());
+    }
 #ifndef _WIN32
     // Sensitive documents and the in-memory password must not leak through
     // crash dumps; disable them outright (best effort).

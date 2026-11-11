@@ -56,6 +56,7 @@ extern "C" {
 #include "core/utf8.h"
 #include "platform/file_io.h"
 #include "platform/random.h"
+#include "platform/crash_report.h"
 #include "platform/secure_mem.h"
 }
 
@@ -3618,6 +3619,8 @@ static std::string initial_path_from_cmdline()
 
 int main(int argc, char **argv)
 {
+    // Report fatal crashes without recording any document material.
+    txx_crash_report_install("encryptEd", ENCRYPTED_APP_VERSION);
 #ifndef _WIN32
     // Sensitive documents and the in-memory password must not leak through
     // crash dumps; disable them outright (best effort).
@@ -3660,6 +3663,14 @@ int main(int argc, char **argv)
     std::string initial = (argc > 1) ? std::string(argv[1]) : std::string{};
 #endif
     if (!initial.empty()) win.open_initial_path(initial);
+
+    // A report from an earlier crash holds only code offsets, never content.
+    {
+        char report[2048];
+        if (txx_crash_report_take_previous(report, sizeof report) > 0)
+            fl_alert("encryptEd closed unexpectedly last time.\n\n%s\n"
+                     "The report is saved in:\n%s", report, txx_crash_report_path());
+    }
 
     return Fl::run();
 }

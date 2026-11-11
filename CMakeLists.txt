@@ -127,6 +127,7 @@ add_library(encrypted_core STATIC
     src/core/txx_format.c
     src/core/txx_status.c
     src/core/utf8.c
+    src/platform/crash_report.c
     src/platform/file_io.c
     src/platform/random.c
     src/platform/secure_mem.c
@@ -561,6 +562,11 @@ if(TARGET encryptEd)
     encrypted_apply_hardening(gui_secure_buffer_tests)
     add_test(NAME gui_secure_buffer_tests COMMAND gui_secure_buffer_tests)
 endif()
+
+add_executable(crash_report_tests tests/crash_report_tests.c)
+target_link_libraries(crash_report_tests PRIVATE encrypted_core)
+add_test(NAME crash_report_tests COMMAND crash_report_tests)
+set_tests_properties(crash_report_tests PROPERTIES TIMEOUT 30)
 
 add_executable(plugin_tests tests/plugin_tests.cpp)
 target_link_libraries(plugin_tests PRIVATE encrypted_plugins)
