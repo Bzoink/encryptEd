@@ -7,8 +7,8 @@
 - Added **regular-expression** find and replace to both `encryptEd` and `etui`
   (TRE 0.9.0, unmodified, linear-time matching) behind a "Regular expression"
   checkbox; plain-text search stays the default. Replacements support `\1`–`\9`,
-  `\0`, `\n`, `\t`. The GUI gained a status line and a "Match case" option in `etui`;
-  Replace All is a single undo step in both editors. Both editors now share one
+  `\0`, `\n`, `\t`. The GUI Find / Replace window gained a status line and `etui` gained a
+  "Match case" option; Replace All is a single undo step in both editors. Both editors now share one
   search implementation (`src/search/`).
 
 ### Fixes and hardening
